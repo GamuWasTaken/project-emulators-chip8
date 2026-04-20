@@ -1,7 +1,6 @@
-fn main() {
-    println!("Hello, world!");
-}
+use std::{thread::sleep, time::Duration};
 
+use rand::random;
 // TODO maybe make it more compact?
 // stitch!(4-bit [ a, b, c ] as u16)
 macro_rules! stitch {
@@ -22,9 +21,51 @@ macro_rules! stitch {
     };
 }
 macro_rules! r {
-    ($target: ident.v [$reg: expr]) => {
-        $target.v[$reg as usize]
+    ($base: ident.$target: ident [$reg: expr]) => {
+        $base.$target[$reg as usize]
     };
+}
+// 8*4 u8
+fn main() {
+    let mut chip = Chip8::default();
+
+    let program = include_bytes!("./test.ch8");
+    // chip.load_program(program);
+    chip.load_data(FONT.as_flattened());
+    let program = [0xd0, 0x05];
+    chip.load_program(&program);
+
+    let (x, y) = (2, 2);
+    for i in 0..5 {
+        chip.display[8 * (i + y) + x] = FONT[0x3][i];
+    }
+
+    // TODO change the indexing of chip to enum + offset
+    // with checked sum (to not get out of range)
+    // continuous block of memory
+    // with checked index (impl)
+    loop {
+        // chip.step();
+        simple_display(&chip);
+        return;
+        sleep(Duration::from_nanos(100));
+    }
+}
+
+fn simple_display(chip: &Chip8) {
+    let mut frame = String::new();
+    for row in chip.display.chunks(64 / 8) {
+        for p in row {
+            frame.push_str(format!("{:08b}", p).as_str());
+        }
+
+        frame.push('\n');
+    }
+
+    println!("{}", frame.replace("0", "░").replace("1", "█"));
+    println!("pc:{} | v:{:x?}", chip.pc, chip.v);
+
+    // println!("{:x?}", chip.memory);
 }
 
 const NIBBLE: usize = 4;
@@ -34,6 +75,8 @@ const STK: usize = (0xec0 - 0xea0) / 2;
 const MEM: usize = 0xea0 - 0x200;
 const DAT: usize = 0x200 - 0x000;
 
+// TODO consider impl Index for Chip8 -> self[Memory + reg] = ...
+// Better control over access, a place to add checks
 #[derive(Debug, Clone)]
 pub struct Chip8 {
     // 0x1000 | End
@@ -49,6 +92,7 @@ pub struct Chip8 {
     pub memory: [u8; MEM],  // 0x0200 | Free (3232)
     pub data: [u8; DAT],    // 0x0000 | Internal Data (200)
 }
+
 impl Default for Chip8 {
     fn default() -> Self {
         Self {
@@ -57,7 +101,7 @@ impl Default for Chip8 {
             st: Default::default(),
             dt: Default::default(),
             sp: Default::default(),
-            pc: Default::default(),
+            pc: 0,
             i: Default::default(),
             v: Default::default(),
             stack: Default::default(),
@@ -78,17 +122,36 @@ impl Chip8 {
         self.sp -= 1;
         self.stack[self.sp as usize]
     }
+    pub fn load_program(&mut self, program: &[u8]) {
+        self.memory[0..program.len()].copy_from_slice(program);
+    }
+    pub fn load_data(&mut self, data: &[u8]) {
+        self.data[0..data.len()].copy_from_slice(data);
+    }
     // TODO add guards
     pub fn step(&mut self) {
         use OpCode::*;
+        assert!(self.pc < self.memory.len() as _, "pc out of bounds");
 
-        let opcode = self.memory[self.pc as usize..(self.pc + 1) as usize].into();
+        let pc = self.pc as usize;
+        let fragment = self.memory[pc..pc + 2].as_array().unwrap();
+        let opcode = fragment.into();
+
+        println!("{:?} {:x?}", opcode, OpCode::as_nibbles(fragment));
+
         match opcode {
             NoOp { .. } => (),
             Clear => self.display = [0; _],
             Draw { x, y, size } => {
-                let (x, y) = (r!(self.v[x]), r!(self.v[y]));
-                todo!();
+                let (x, y) = (r!(self.v[x]) as usize, r!(self.v[y]) as usize);
+                for n in 0..size {
+                    // 8 * 32
+                    let sprite = 8 * (y + n as usize) + x;
+                    let target = r!(self.display[sprite]);
+                    let result = target ^ r!(self.memory[self.i + n as u16]);
+                    self.v[0xf] = ((target & !result) == 0) as u8;
+                    r!(self.display[sprite]) = result;
+                }
             }
             Return => self.pc = self.pop(),
             Jump { to } => self.pc = to,
@@ -101,59 +164,59 @@ impl Chip8 {
             }
             SkipEqK { reg, val } => {
                 if self.v[reg as usize] == val {
-                    self.pc += 1;
+                    self.pc += 2;
                 }
             }
 
             SkipNotEqK { reg, val } => {
                 if self.v[reg as usize] != val {
-                    self.pc += 1;
+                    self.pc += 2;
                 }
             }
             SkipEq { a, b } => {
                 if self.v[a as usize] == self.v[b as usize] {
-                    self.pc += 1;
+                    self.pc += 2;
                 }
             }
             SkipNotEq { a, b } => {
                 if self.v[a as usize] != self.v[b as usize] {
-                    self.pc += 1;
+                    self.pc += 2;
                 }
             }
             SetV { reg, to } => self.v[reg as usize] = to,
             IncrementV { reg, by } => self.v[reg as usize] = self.v[reg as usize].wrapping_add(by),
             SetI { to } => self.i = to,
-            GetRand { reg, mask } => todo!("set up rand"),
+            GetRand { reg, mask } => r!(self.v[reg]) = random::<u8>() & mask,
             SkipPressed { key } => {
                 if self.key == key {
-                    self.pc += 1;
+                    self.pc += 2;
                 }
             }
             SkipNotPressed { key } => {
                 if self.key != key {
-                    self.pc += 1;
+                    self.pc += 2;
                 }
             }
-            ReadKey { to } => todo!("set up bloking"),
+            ReadKey { to } => todo!("set up blocking"),
             ReadDelay { to } => self.v[to as usize] = self.dt,
             SetDelay { with } => self.dt = self.v[with as usize],
             SetSound { with } => self.st = self.v[with as usize],
             OffsetI { with } => self.i += self.v[with as usize] as u16,
-            GetFontSprite { of } => todo!("set font table"),
+            GetFontSprite { of } => self.i = r!(self.v[of]) as u16 * 5 * 8, // TODO maybe make a table...
             SaveRegs { upto } => {
                 for x in 0..upto {
                     self.memory[(self.i + x as u16) as usize] = self.v[x as usize];
                 }
-                self.i += upto as u16 + 1;
+                self.i += upto as u16;
             }
             LoadRegs { upto } => {
                 for x in 0..upto {
                     self.v[x as usize] = self.memory[(self.i + x as u16) as usize];
                 }
-                self.i += upto as u16 + 1;
+                self.i += upto as u16;
             }
             BCD { of } => {
-                let range = self.i as usize..(self.i as usize + 2);
+                let range = self.i as usize..(self.i as usize + 3);
                 let of = self.v[of as usize];
                 self.memory[range].copy_from_slice(&[
                     (of / 100) % 10,
@@ -168,27 +231,29 @@ impl Chip8 {
             Add { a, b } => {
                 let res = r!(self.v[a]) as u16 + r!(self.v[b]) as u16;
                 r!(self.v[a]) = res as u8;
-                self.v[0xf] = if res & 0xff00 == 0 { 0 } else { 1 };
+                self.v[0xf] = (res & 0xff00 == 0) as u8;
             }
             Sub { a, b } => {
-                let (a, b) = (r!(self.v[a]), r!(self.v[b]));
-                r!(self.v[a]) = a.wrapping_sub(b);
-                self.v[0xf] = if a < b { 1 } else { 0 };
+                let (a_val, b_val) = (r!(self.v[a]), r!(self.v[b]));
+                r!(self.v[a]) = a_val.wrapping_sub(b_val);
+                self.v[0xf] = (a_val < b_val) as u8;
             }
             ShiftR { a, b } => {
                 self.v[0xf] = r!(self.v[b]) & 0x1;
                 r!(self.v[a]) = r!(self.v[b]) >> 1;
             }
             SubN { a, b } => {
-                let (a, b) = (r!(self.v[a]), r!(self.v[b]));
-                r!(self.v[a]) = b.wrapping_sub(a);
-                self.v[0xf] = if b < a { 1 } else { 0 };
+                let (a_val, b_val) = (r!(self.v[a]), r!(self.v[b]));
+                r!(self.v[a]) = b_val.wrapping_sub(a_val);
+                self.v[0xf] = (b_val < a_val) as u8;
             }
             ShiftL { a, b } => {
                 self.v[0xf] = r!(self.v[b]) >> 7;
                 r!(self.v[a]) = r!(self.v[b]) << 1;
             }
         }
+
+        self.pc += 2;
     }
 }
 
@@ -256,17 +321,19 @@ pub enum OpCode {
     SubN { a: Reg, b: Reg },    // 8XY7 | Sub * -1
     ShiftL { a: Reg, b: Reg },  // 8XYE | SftL
 }
-
-impl From<&[u8]> for OpCode {
-    fn from(value: &[u8]) -> Self {
-        assert!(value.len() == 2, "bad opcode");
-
-        let [a, b, c, d] = [
-            value[0] << 4,
-            value[0] & 0xff,
-            value[1] << 4,
-            value[1] & 0xff,
-        ];
+impl OpCode {
+    fn as_nibbles(opcode: &[u8; 2]) -> [u8; 4] {
+        [
+            opcode[0] >> 4,
+            opcode[0] & 0xf,
+            opcode[1] >> 4,
+            opcode[1] & 0xf,
+        ]
+    }
+}
+impl From<&[u8; 2]> for OpCode {
+    fn from(value: &[u8; 2]) -> Self {
+        let [a, b, c, d] = OpCode::as_nibbles(value);
         use OpCode::*;
         match (a, b, c, d) {
             (0, 0, 0xe, 0) => Clear,
@@ -330,7 +397,7 @@ impl From<&[u8]> for OpCode {
             (0x8, a, b, 7) => SubN { a, b },
             (0x8, a, b, 0xe) => ShiftL { a, b },
             unknown => {
-                eprintln!("Unknown opcode {:#x?}", unknown);
+                eprintln!("Unknown opcode {:x?}", unknown);
                 NoOp { val: 0 }
             }
         }
