@@ -1,26 +1,6 @@
-// TODO maybe make it more compact?
-// stitch!([ a, b, c ] as u16)
-macro_rules! stitch {
-    ([
-    $a: ident $b: ident $c: ident $d: ident
-] as $target: ty) => {
-        (((((($a << NIBBLE) + $b) << NIBBLE) + $c) << NIBBLE) + $d) as $target
-    };
-    ([
-    $a: ident $b: ident $c: ident
-] as $target: ty) => {
-        (((($a << NIBBLE) + $b) << NIBBLE) + $c) as $target
-    };
-    ([
-    $a: ident $b: ident
-] as $target: ty) => {
-        (($a << NIBBLE) + $b) as $target
-    };
-}
-const NIBBLE: usize = 4;
-
 pub type Reg = u8;
-pub type Adr = u16;
+pub type Adr = [u8; 2];
+use super::memops::stitch;
 
 // TODO is it ok to use more mem than needed? opcodes are 16-bits
 // Reg should be a u4
@@ -33,14 +13,14 @@ pub enum OpCode {
     Return,                            // 00EE | Flow | return (pop into I)
     Jump { to: Adr },                  // 1NNN | Flow | jump (set PC to NNN)
     Call { at: Adr },                  // 2NNN | Flow | call subroutine (push and set I to NNN)
-    Advance { by: u16 },               // BNNN | Flow | PC = V0 + NNN
+    Advance { by: Adr },               // BNNN | Flow | PC = V0 + NNN
     SkipEqK { reg: Reg, val: u8 },     // 3XNN | Cond | PC + 1 if VX == NN
     SkipNotEqK { reg: Reg, val: u8 },  // 4XNN | Cond | PC + 1 if VX != NN
     SkipEq { a: Reg, b: Reg },         // 5XY0 | Cond | PC + 1 if VX == VY
     SkipNotEq { a: Reg, b: Reg },      // 9XY0 | Cond | PC + 1 if VX != VY
     SetV { reg: Reg, to: u8 },         // 6XNN | Cons | VX = NN
     IncrementV { reg: Reg, by: u8 },   // 7XNN | Cons | VX += NN (doesnt flag overflow)
-    SetI { to: u16 },                  // ANNN | Load | I = NNN
+    SetI { to: Adr },                  // ANNN | Load | I = NNN
     GetRand { reg: Reg, mask: u8 },    // CXNN | Rand | VX = rand() & NN
     SkipPressed { key: Reg },          // EX9E | Read | PC + 1 if key() == VX
     SkipNotPressed { key: Reg },       // EXA1 | Read | PC + 1 if key() != VX
@@ -87,41 +67,41 @@ impl From<&[u8; 2]> for OpCode {
             (0xd, x, y, size) => Draw { x, y, size },
             (0, 0, 0xe, 0xe) => Return,
             (0, b, c, d) => NoOp {
-                val: stitch!([b c d] as u16),
+                val: stitch![0, b, c, d],
             },
             (0x1, b, c, d) => Jump {
-                to: stitch!([b c d] as u16),
+                to: stitch![0, b, c, d],
             },
             (0x2, b, c, d) => Call {
-                at: stitch!([b c d] as u16),
+                at: stitch![0, b, c, d],
             },
             (0xb, b, c, d) => Advance {
-                by: stitch!([b c d] as u16),
+                by: stitch![0, b, c, d],
             },
             (0x3, reg, c, d) => SkipEqK {
                 reg,
-                val: stitch!([c d] as u8),
+                val: stitch![c, d],
             },
             (0x4, reg, c, d) => SkipNotEqK {
                 reg,
-                val: stitch!([c d] as u8),
+                val: stitch![c, d],
             },
             (0x5, a, b, 0) => SkipEq { a, b },
             (0x9, a, b, 0) => SkipNotEq { a, b },
             (0x6, reg, c, d) => SetV {
                 reg,
-                to: stitch!([c d] as u8),
+                to: stitch![c, d],
             },
             (0x7, reg, c, d) => IncrementV {
                 reg,
-                by: stitch!([c d] as u8),
+                by: stitch![c, d],
             },
             (0xa, b, c, d) => SetI {
-                to: stitch!([b c d] as u16),
+                to: stitch![0, b, c, d],
             },
             (0xc, reg, c, d) => GetRand {
                 reg,
-                mask: stitch!([c d] as u8),
+                mask: stitch![c, d],
             },
             (0xe, key, 0x9, 0xe) => SkipPressed { key },
             (0xe, key, 0xa, 0x1) => SkipNotPressed { key },
@@ -145,7 +125,9 @@ impl From<&[u8; 2]> for OpCode {
             (0x8, a, b, 0xe) => ShiftL { a, b },
             other => {
                 eprintln!("Unknown opcode {:x?}", other);
-                NoOp { val: 0 }
+                NoOp {
+                    val: stitch![0, 0, 0, 0],
+                }
             }
         }
     }

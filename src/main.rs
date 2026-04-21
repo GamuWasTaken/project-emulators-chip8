@@ -1,53 +1,53 @@
 use std::{thread::sleep, time::Duration};
 
-macro_rules! r {
-    ($base: ident.$target: ident [$reg: expr]) => {
-        $base.$target[$reg as usize]
-    };
-}
 pub mod chip8;
 pub mod opcode;
 
+pub mod memops;
+
 use chip8::*;
+use memops::*;
 
 fn main() {
     let mut chip = Chip8::default();
 
     let program = include_bytes!("./test.ch8");
-    let program = [0xd0, 0x05];
+    // let program = [0xd0, 0x15];
 
     chip.load_data(FONT.as_flattened());
-    chip.load_program(&program);
+    chip.load_program(program);
 
-    let (x, y) = (2, 2);
-    for i in 0..5 {
-        chip.display[8 * (i + y) + x] = FONT[0x3][i];
-    }
+    chip[V + 0] = 1 as _;
+    chip[V + 1] = 1 as _;
 
-    // TODO change the indexing of chip to enum + offset
-    // with checked sum (to not get out of range)
-    // continuous block of memory
-    // with checked index (impl)
+    let mut i = 0;
     loop {
-        // chip.step();
+        println!("Frame: {i}");
+        i += 1;
+        chip.step();
         simple_display(&chip);
-        return;
         sleep(Duration::from_nanos(100));
+
+        if i > 20 {
+            return;
+        }
     }
 }
 
 fn simple_display(chip: &Chip8) {
     let mut frame = String::new();
-    for row in chip.display.chunks(64 / 8) {
-        for p in row {
-            frame.push_str(format!("{:08b}", p).as_str());
-        }
-
-        frame.push('\n');
+    for y in 0..32 {
+        let line = read!(u64 from chip Display at (y*8));
+        frame.push_str(format!("{:064b}\n", line).as_str());
     }
 
     println!("{}", frame.replace("0", "░").replace("1", "█"));
-    println!("pc:{} | v:{:x?}", chip.pc, chip.v);
+    println!(
+        "pc:{} | v:{:032x?} | i:{:04x}",
+        chip[PC],
+        read!(u128 from chip V at 0),
+        read!(u16 from chip I)
+    );
 
     // println!("{:x?}", chip.memory);
 }
