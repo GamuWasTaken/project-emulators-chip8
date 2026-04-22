@@ -16,11 +16,15 @@ pub(crate) use stitch;
 // self[Memory + (0..program.len())].copy_from_slice(program);
 // copy!(program => self, Memory at 0);
 macro_rules! copy {
+    ($from: expr => $self: ident at $offset: expr) => {
+        $self.0[($offset as usize)..($offset as usize + $from.len())].copy_from_slice($from)
+    };
     ($from: expr => $self: ident $target: ident at $offset: expr) => {
         $self[$target + ($offset..($offset + $from.len()))].copy_from_slice($from)
     };
     ($from: expr => $self: ident $target: ident) => {
-        $self[$target + (0..$from.len())].copy_from_slice($from)
+        copy!($from => $self $target at 0)
+        // $self[$target + (0..$from.len())].copy_from_slice($from)
     };
 }
 pub(crate) use copy;
@@ -38,6 +42,7 @@ macro_rules! read {
             $self[$target + $offset as u16 + 7],
         ])
     };
+    (u64 from $self: ident $target: ident) => { read!(u64 from $self $target at 0u16) };
     (u128 from $self: ident $target: ident at $offset: expr) => {
         u128::from_be_bytes([
             $self[$target + $offset as u16 + 0],
@@ -58,12 +63,14 @@ macro_rules! read {
             $self[$target + $offset as u16 + 15],
         ])
     };
+    (u128 from $self: ident $target: ident) => { read!(u128 from $self $target at 0u16) };
     (u16 from $self: ident $target: ident at $offset: expr) => {
         u16::from_be_bytes([$self[$target + $offset + 0], $self[$target + $offset + 1]])
     };
-    (u16 from $self: ident $target: ident) => {
-        u16::from_be_bytes([$self[$target + 0], $self[$target + 1]])
-    };
+    (u16 from $self: ident $target: ident) => { read!(u16 from $self $target at 0u16) };
+
+    (u8 from $self: ident $target: ident at $offset: expr) => { $self[$target + $offset] as u8 };
+    (u8 from $self: ident $target: ident) => { read!(u8 from $self $target at 0u16) };
 }
 
 pub(crate) use read;
@@ -83,7 +90,7 @@ pub enum Region {
     SP = 0x0ED4,      // 0x0ED4 | Stack pointer (1)
     PC = 0x0ED2,      // 0x0ED2 | Program counter (2)
     I = 0x0ED0,       // 0x0ED0 | Address register (2)
-    V = 0x0EC0,       // 0x0EC0 | V Registers (16)
+    Vs = 0x0EC0,      // 0x0EC0 | V Registers (16)
     Stack = 0x0EA0,   // 0x0EA0 | Call stack (32)
     Memory = 0x0200,  // 0x0200 | Free (3232)
     Data = 0x0000,    // 0x0000 | Internal Data (200)
@@ -101,8 +108,8 @@ impl Region {
             Region::SP => DT as usize - SP as usize,
             Region::PC => SP as usize - PC as usize,
             Region::I => PC as usize - I as usize,
-            Region::V => I as usize - V as usize,
-            Region::Stack => V as usize - Stack as usize,
+            Region::Vs => I as usize - Vs as usize,
+            Region::Stack => Vs as usize - Stack as usize,
             Region::Memory => Stack as usize - Memory as usize,
             Region::Data => Memory as usize - Data as usize,
         }

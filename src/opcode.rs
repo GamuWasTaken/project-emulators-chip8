@@ -13,13 +13,13 @@ pub enum OpCode {
     Return,                            // 00EE | Flow | return (pop into I)
     Jump { to: Adr },                  // 1NNN | Flow | jump (set PC to NNN)
     Call { at: Adr },                  // 2NNN | Flow | call subroutine (push and set I to NNN)
-    Advance { by: Adr },               // BNNN | Flow | PC = V0 + NNN
+    JumpReg { by: Adr },               // BNNN | Flow | PC = V0 + NNN
     SkipEqK { reg: Reg, val: u8 },     // 3XNN | Cond | PC + 1 if VX == NN
     SkipNotEqK { reg: Reg, val: u8 },  // 4XNN | Cond | PC + 1 if VX != NN
     SkipEq { a: Reg, b: Reg },         // 5XY0 | Cond | PC + 1 if VX == VY
     SkipNotEq { a: Reg, b: Reg },      // 9XY0 | Cond | PC + 1 if VX != VY
     SetV { reg: Reg, to: u8 },         // 6XNN | Cons | VX = NN
-    IncrementV { reg: Reg, by: u8 },   // 7XNN | Cons | VX += NN (doesnt flag overflow)
+    IncV { reg: Reg, by: u8 },         // 7XNN | Cons | VX += NN (doesnt flag overflow)
     SetI { to: Adr },                  // ANNN | Load | I = NNN
     GetRand { reg: Reg, mask: u8 },    // CXNN | Rand | VX = rand() & NN
     SkipPressed { key: Reg },          // EX9E | Read | PC + 1 if key() == VX
@@ -28,7 +28,7 @@ pub enum OpCode {
     ReadDelay { to: Reg },             // FX07 | Time | VX = DT
     SetDelay { with: Reg },            // FX15 | Time | DT = VX
     SetSound { with: Reg },            // FX18 | Time | ST = VX
-    OffsetI { with: Reg },             // FX1E | Memo | I += VX
+    IncI { with: Reg },                // FX1E | Memo | I += VX
     GetFontSprite { of: Reg },         // FX29 | Memo | I = sprite_addr[VX]
     SaveRegs { upto: Reg },            // FX55 | Memo | dump data from V0 to VX regs to Mem[I]
     LoadRegs { upto: Reg },            // FX65 | Memo | load data regs V0..VX from I
@@ -55,8 +55,21 @@ impl OpCode {
             opcode[1] & 0xf,
         ]
     }
-}
 
+    pub fn parse_program(program: &[u8]) -> Vec<OpCode> {
+        let (chunks, []) = program.as_chunks() else {
+            panic!("Program opcodes are unaligned")
+        };
+
+        chunks.into_iter().map(OpCode::from).collect()
+    }
+}
+impl From<u16> for OpCode {
+    fn from(value: u16) -> Self {
+        let [hi, lo] = value.to_be_bytes();
+        Into::into(&[hi, lo])
+    }
+}
 impl From<&[u8; 2]> for OpCode {
     fn from(value: &[u8; 2]) -> Self {
         let [a, b, c, d] = OpCode::as_nibbles(value);
@@ -66,16 +79,19 @@ impl From<&[u8; 2]> for OpCode {
             (0, 0, 0xe, 0) => Clear,
             (0xd, x, y, size) => Draw { x, y, size },
             (0, 0, 0xe, 0xe) => Return,
-            (0, b, c, d) => NoOp {
-                val: stitch![0, b, c, d],
-            },
+            (0, b, c, d) => {
+                // panic!("NoOp - not really a panic, but sus");
+                NoOp {
+                    val: stitch![0, b, c, d],
+                }
+            }
             (0x1, b, c, d) => Jump {
                 to: stitch![0, b, c, d],
             },
             (0x2, b, c, d) => Call {
                 at: stitch![0, b, c, d],
             },
-            (0xb, b, c, d) => Advance {
+            (0xb, b, c, d) => JumpReg {
                 by: stitch![0, b, c, d],
             },
             (0x3, reg, c, d) => SkipEqK {
@@ -92,7 +108,7 @@ impl From<&[u8; 2]> for OpCode {
                 reg,
                 to: stitch![c, d],
             },
-            (0x7, reg, c, d) => IncrementV {
+            (0x7, reg, c, d) => IncV {
                 reg,
                 by: stitch![c, d],
             },
@@ -109,7 +125,7 @@ impl From<&[u8; 2]> for OpCode {
             (0xf, to, 0, 0x7) => ReadDelay { to },
             (0xf, with, 0x1, 0x5) => SetDelay { with },
             (0xf, with, 0x1, 0x8) => SetSound { with },
-            (0xf, with, 0x1, 0xe) => OffsetI { with },
+            (0xf, with, 0x1, 0xe) => IncI { with },
             (0xf, of, 0x2, 0x9) => GetFontSprite { of },
             (0xf, upto, 0x5, 0x5) => SaveRegs { upto },
             (0xf, upto, 0x6, 0x5) => LoadRegs { upto },
@@ -124,7 +140,7 @@ impl From<&[u8; 2]> for OpCode {
             (0x8, a, b, 7) => SubN { a, b },
             (0x8, a, b, 0xe) => ShiftL { a, b },
             other => {
-                eprintln!("Unknown opcode {:x?}", other);
+                // panic!("Unknown opcode {:x?}", other);
                 NoOp {
                     val: stitch![0, 0, 0, 0],
                 }

@@ -7,49 +7,43 @@ pub mod memops;
 
 use chip8::*;
 use memops::*;
+use opcode::*;
 
 fn main() {
     let mut chip = Chip8::default();
 
-    let program = include_bytes!("./test.ch8");
+    let program = include_bytes!("./maze.ch8");
     // let program = [0xd0, 0x15];
 
     chip.load_data(FONT.as_flattened());
     chip.load_program(program);
 
-    chip[V + 0] = 1 as _;
-    chip[V + 1] = 1 as _;
+    // for (i, code) in OpCode::parse_program(program).iter().enumerate() {
+    //     println!("{i:3} : {:?}", code);
+    // }
+    // return;
 
-    let mut i = 0;
-    loop {
-        println!("Frame: {i}");
-        i += 1;
+    for i in 0.. {
         chip.step();
-        simple_display(&chip);
+        simple_display(&chip, i);
         sleep(Duration::from_nanos(100));
-
-        if i > 20 {
-            return;
-        }
     }
 }
 
-fn simple_display(chip: &Chip8) {
+fn simple_display(chip: &Chip8, frame_number: u32) {
     let mut frame = String::new();
     for y in 0..32 {
         let line = read!(u64 from chip Display at (y*8));
         frame.push_str(format!("{:064b}\n", line).as_str());
     }
 
-    println!("{}", frame.replace("0", "░").replace("1", "█"));
-    println!(
-        "pc:{} | v:{:032x?} | i:{:04x}",
-        chip[PC],
-        read!(u128 from chip V at 0),
-        read!(u16 from chip I)
-    );
+    let pc = read!(u16 from chip PC);
+    let vs = read!(u128 from chip Vs);
+    let i = read!(u16 from chip I);
 
-    // println!("{:x?}", chip.memory);
+    println!("{}Frame{frame_number:5}_", "_".repeat(54));
+    println!("{}", frame.replace("0", "░").replace("1", "█"));
+    println!("pc:({:x}) | v:{vs:032x?} | i:{i:04x}", pc - 0x200,);
 }
 
 pub const FONT: [[u8; 5]; 16] = [
