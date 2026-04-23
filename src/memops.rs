@@ -1,79 +1,103 @@
-use std::ops::{Index, IndexMut, Range};
-
 use super::Chip8;
+
+impl<'a, const K: usize> ByteArray<'a, [u8; K]> for Chip8 {}
+impl<'a> ByteArray<'a, u8> for Chip8 {}
+impl<'a> ByteArray<'a, u16> for Chip8 {}
+impl<'a> ByteArray<'a, u32> for Chip8 {}
+impl<'a> ByteArray<'a, u64> for Chip8 {}
+impl<'a> ByteArray<'a, u128> for Chip8 {}
+
+impl std::ops::Index<std::ops::Range<usize>> for Chip8 {
+    type Output = [u8];
+
+    fn index(&self, index: std::ops::Range<usize>) -> &Self::Output {
+        &self.0[index]
+    }
+}
+impl std::ops::IndexMut<std::ops::Range<usize>> for Chip8 {
+    fn index_mut(&mut self, index: std::ops::Range<usize>) -> &mut Self::Output {
+        &mut self.0[index]
+    }
+}
+
+pub trait ByteArray<'a, T: ByteList<'a, Output: AsSlice<u8>>>:
+    std::ops::IndexMut<std::ops::Range<usize>, Output = [u8]>
+{
+    #[must_use]
+    fn read(&'a self, from: impl Into<u16>) -> Option<T> {
+        let from = from.into() as usize;
+        let range = from..from.checked_add(size_of::<T>())?;
+        T::from(&self[range])
+    }
+    #[must_use]
+    fn write(&mut self, data: T, at: impl Into<u16>) -> Option<()> {
+        let at = at.into() as usize;
+        let at = at..at.checked_add(size_of::<T>())?;
+        self[at].copy_from_slice(data.to_list().to_slice());
+
+        Some(())
+    }
+}
+
+pub trait ByteList<'a>: Sized {
+    type Output;
+    fn from(data: &'a [u8]) -> Option<Self>;
+    fn to_list(self) -> Self::Output;
+}
+
+pub trait AsSlice<T> {
+    fn to_slice(&self) -> &[T];
+}
+
+macro_rules! impl_FromBytes {
+    ($t: ty) => {
+        impl<'a> ByteList<'a> for $t {
+            type Output = [u8; size_of::<$t>()];
+            fn from(data: &'a [u8]) -> Option<Self> {
+                Some(<$t>::from_be_bytes(
+                    data.get(0..size_of::<Self>())?.try_into().ok()?,
+                ))
+            }
+            fn to_list(self) -> Self::Output {
+                <$t>::to_be_bytes(self)
+            }
+        }
+    };
+}
+impl_FromBytes!(u8);
+impl_FromBytes!(u16);
+impl_FromBytes!(u32);
+impl_FromBytes!(u64);
+impl_FromBytes!(u128);
+
+impl<'a, const K: usize> ByteList<'a> for [u8; K] {
+    type Output = [u8; K];
+
+    fn from(data: &'a [u8]) -> Option<Self> {
+        data.try_into().ok()
+    }
+
+    fn to_list(self) -> Self::Output {
+        self
+    }
+}
+impl<const K: usize> AsSlice<u8> for [u8; K] {
+    fn to_slice(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
 
 // TODO maybe make it more compact?
 // stitch!([ a, b, c ] as u16)
 macro_rules! stitch {
     [$a: expr, $b: expr, $c: expr, $d: expr] => {
-        [stitch![$a, $b], stitch![$c, $d]]
+        u16::from_be_bytes([stitch![$a, $b], stitch![$c, $d]])
     };
     [$a: expr, $b: expr] => {
         (($a << 4) + $b) as u8
     };
 }
 pub(crate) use stitch;
-// self[Memory + (0..program.len())].copy_from_slice(program);
-// copy!(program => self, Memory at 0);
-macro_rules! copy {
-    ($from: expr => $self: ident at $offset: expr) => {
-        $self.0[($offset as usize)..($offset as usize + $from.len())].copy_from_slice($from)
-    };
-    ($from: expr => $self: ident $target: ident at $offset: expr) => {
-        $self[$target + ($offset..($offset + $from.len()))].copy_from_slice($from)
-    };
-    ($from: expr => $self: ident $target: ident) => {
-        copy!($from => $self $target at 0)
-        // $self[$target + (0..$from.len())].copy_from_slice($from)
-    };
-}
-pub(crate) use copy;
-
-macro_rules! read {
-    (u64 from $self: ident $target: ident at $offset: expr) => {
-        u64::from_be_bytes([
-            $self[$target + $offset as u16 + 0],
-            $self[$target + $offset as u16 + 1],
-            $self[$target + $offset as u16 + 2],
-            $self[$target + $offset as u16 + 3],
-            $self[$target + $offset as u16 + 4],
-            $self[$target + $offset as u16 + 5],
-            $self[$target + $offset as u16 + 6],
-            $self[$target + $offset as u16 + 7],
-        ])
-    };
-    (u64 from $self: ident $target: ident) => { read!(u64 from $self $target at 0u16) };
-    (u128 from $self: ident $target: ident at $offset: expr) => {
-        u128::from_be_bytes([
-            $self[$target + $offset as u16 + 0],
-            $self[$target + $offset as u16 + 1],
-            $self[$target + $offset as u16 + 2],
-            $self[$target + $offset as u16 + 3],
-            $self[$target + $offset as u16 + 4],
-            $self[$target + $offset as u16 + 5],
-            $self[$target + $offset as u16 + 6],
-            $self[$target + $offset as u16 + 7],
-            $self[$target + $offset as u16 + 8],
-            $self[$target + $offset as u16 + 9],
-            $self[$target + $offset as u16 + 10],
-            $self[$target + $offset as u16 + 11],
-            $self[$target + $offset as u16 + 12],
-            $self[$target + $offset as u16 + 13],
-            $self[$target + $offset as u16 + 14],
-            $self[$target + $offset as u16 + 15],
-        ])
-    };
-    (u128 from $self: ident $target: ident) => { read!(u128 from $self $target at 0u16) };
-    (u16 from $self: ident $target: ident at $offset: expr) => {
-        u16::from_be_bytes([$self[$target + $offset + 0], $self[$target + $offset + 1]])
-    };
-    (u16 from $self: ident $target: ident) => { read!(u16 from $self $target at 0u16) };
-
-    (u8 from $self: ident $target: ident at $offset: expr) => { $self[$target + $offset] as u8 };
-    (u8 from $self: ident $target: ident) => { read!(u8 from $self $target at 0u16) };
-}
-
-pub(crate) use read;
 
 pub use Region::*;
 
@@ -96,6 +120,12 @@ pub enum Region {
     Data = 0x0000,    // 0x0000 | Internal Data (200)
 }
 
+impl From<Region> for u16 {
+    fn from(value: Region) -> Self {
+        value as u16
+    }
+}
+
 impl Region {
     pub const fn size(&self) -> usize {
         match self {
@@ -116,6 +146,7 @@ impl Region {
     }
 }
 
+#[derive(Debug)]
 pub struct Offset(Region, u16);
 impl Offset {
     pub fn new(region: Region, offset: u16) -> Self {
@@ -128,9 +159,9 @@ impl Offset {
         Offset(region, offset)
     }
 }
-impl From<Offset> for usize {
+impl From<Offset> for u16 {
     fn from(Offset(region, offset): Offset) -> Self {
-        region as usize + offset as usize
+        region as u16 + offset
     }
 }
 
@@ -139,14 +170,6 @@ impl std::ops::Add<u8> for Offset {
 
     fn add(self, rhs: u8) -> Self::Output {
         Offset::new(self.0, self.1 + rhs as u16)
-    }
-}
-// Index by u16
-impl std::ops::Index<u16> for Chip8 {
-    type Output = u8;
-
-    fn index(&self, index: u16) -> &Self::Output {
-        &self.0[index as usize]
     }
 }
 // Index by Region + u16
@@ -171,50 +194,12 @@ impl std::ops::Add<i32> for Region {
         self + rhs as u16
     }
 }
-impl std::ops::Index<Offset> for Chip8 {
-    type Output = u8;
-
-    fn index(&self, offset: Offset) -> &Self::Output {
-        &self.0[usize::from(offset)]
-    }
-}
-impl std::ops::IndexMut<Offset> for Chip8 {
-    fn index_mut(&mut self, offset: Offset) -> &mut Self::Output {
-        &mut self.0[usize::from(offset)]
-    }
-}
-
-// Index by Region
-impl std::ops::Index<Region> for Chip8 {
-    type Output = u8;
-
-    fn index(&self, index: Region) -> &Self::Output {
-        &self.0[index as usize]
-    }
-}
-impl std::ops::IndexMut<Region> for Chip8 {
-    fn index_mut(&mut self, index: Region) -> &mut Self::Output {
-        &mut self.0[index as usize]
-    }
-}
 
 // Index by Region + Range
-impl std::ops::Add<Range<usize>> for Region {
-    type Output = Range<Offset>;
+impl std::ops::Add<std::ops::Range<usize>> for Region {
+    type Output = std::ops::Range<Offset>;
 
-    fn add(self, rhs: Range<usize>) -> Self::Output {
+    fn add(self, rhs: std::ops::Range<usize>) -> Self::Output {
         (self + rhs.start as u16)..(self + rhs.end as u16)
-    }
-}
-impl Index<Range<Offset>> for Chip8 {
-    type Output = [u8];
-
-    fn index(&self, Range { start, end }: Range<Offset>) -> &Self::Output {
-        &self.0[usize::from(start)..usize::from(end)]
-    }
-}
-impl IndexMut<Range<Offset>> for Chip8 {
-    fn index_mut(&mut self, Range { start, end }: Range<Offset>) -> &mut Self::Output {
-        &mut self.0[usize::from(start)..usize::from(end)]
     }
 }

@@ -1,5 +1,5 @@
 pub type Reg = u8;
-pub type Adr = [u8; 2];
+pub type Adr = u16;
 use super::memops::stitch;
 
 // TODO is it ok to use more mem than needed? opcodes are 16-bits

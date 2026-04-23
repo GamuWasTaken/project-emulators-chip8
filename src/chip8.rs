@@ -9,7 +9,7 @@ pub struct Chip8(pub(crate) [u8; 0x1000]);
 impl Default for Chip8 {
     fn default() -> Self {
         let mut cero = Self([0; _]);
-        copy!(&0x200u16.to_be_bytes() => cero PC);
+        cero.write(0x200u16, PC).unwrap();
 
         cero
     }
@@ -17,197 +17,248 @@ impl Default for Chip8 {
 
 impl Chip8 {
     /// Add current PC to top of stack
-    fn push(&mut self) {
-        let sp = self[SP] as usize;
-        assert!(sp <= 16, "sp over bounds {}", self[SP]);
+    fn push(&mut self) -> Option<()> {
+        let sp: u8 = self.read(SP)?;
+        assert!(sp < 16, "sp over bounds {}", sp);
 
-        let pc = read!(u16 from self PC);
-        copy!(&pc.to_be_bytes() => self Stack at sp);
+        let pc: u16 = self.read(PC)?;
+        self.write(pc, Stack + sp * 2)?;
 
-        self[SP] += 2;
+        self.write(sp + 1, SP)?;
+        Some(())
     }
     /// Pop from top of stack into PC
-    fn pop(&mut self) -> [u8; 2] {
-        assert!(self[SP] > 0, "sp under bounds");
-        self[SP] -= 2;
-        let sp = self[SP];
-        [self[Stack + sp], self[Stack + sp + 1]]
+    fn pop(&mut self) -> Option<u16> {
+        let sp: u8 = ByteArray::<u8>::read(self, SP)?;
+        assert!(sp != 0, "sp under bounds");
+
+        let sp = sp - 1;
+        self.write(sp, SP)?;
+        self.read(Stack + sp * 2)
     }
-    pub fn load_program(&mut self, program: &[u8]) {
-        copy!(program => self Memory);
+    pub fn load_program(&mut self, program: &[u8]) -> Option<()> {
+        self.0[(Memory as usize)..(Memory as usize + program.len())].copy_from_slice(program);
+        Some(())
     }
-    pub fn load_data(&mut self, data: &[u8]) {
-        copy!(data => self Data);
+    pub fn load_data(&mut self, data: &[u8]) -> Option<()> {
+        self.0[(Data as usize)..(Data as usize + data.len())].copy_from_slice(data);
+        Some(())
     }
-    pub fn next_instruction(&mut self) {
-        let next = read!(u16 from self PC) + 2;
-        copy!(&next.to_be_bytes() => self PC);
+    pub fn next_instruction(&mut self) -> Option<()> {
+        let next = ByteArray::<u16>::read(self, PC)? + 2;
+        self.write(next, PC)?;
+
+        Some(())
     }
 
-    pub fn execute(&mut self, opcode: OpCode) {
+    pub fn execute(&mut self, opcode: OpCode) -> Option<()> {
         // TODO add guards
         use OpCode::*;
         match opcode {
             NoOp { .. } => (),
-            Clear => copy!(&[0; Display.size()] => self Display),
+            Clear => self.write([0u8; Display.size()], Display)?,
             Draw { x, y, size } => {
                 assert!(x < 64, "x out of range of screen");
                 assert!(y < 32, "y out of range of screen");
                 assert!(size > 0, "size bellow range");
                 assert!(size < 16, "size over range");
 
-                let (x, y) = (self[Vs + x], self[Vs + y]);
-                let i = read!(u16 from self I);
+                let (x, y): (u8, u8) = (self.read(Vs + x)?, self.read(Vs + y)?);
+                let i: u16 = self.read(I)?;
 
                 for n in 0..size {
-                    let sprite = (self[i + n as u16] as u64) << (64 - 8) >> x;
+                    let sprite =
+                        (ByteArray::<u8>::read(self, i + n as u16)? as u64) << (64 - 8) >> x;
                     let line_start = y + n * 8;
-                    let screen = read!(u64 from self Display at line_start);
+                    let screen: u64 = self.read(Display + line_start)?;
 
                     let xor = sprite ^ screen;
-                    self[Vs + 0xf] = ((screen & !xor) == 0) as u8;
-                    copy!(&xor.to_le_bytes() => self Display at line_start as usize);
+
+                    self.write(((screen & !xor) == 0) as u8, Vs + 0xf)?;
+                    self.write(xor, Display + line_start)?;
                 }
             }
             Return => {
-                let adr = self.pop();
-                copy!(&adr => self PC);
+                let adr = self.pop()?;
+                self.write(adr, PC)?;
             }
-            Jump { to } => copy!(&to => self PC),
+            Jump { to } => self.write(to, PC)?,
             Call { at } => {
-                self.push();
-                copy!(&at => self PC);
+                self.push()?;
+                self.write(at, PC)?;
             }
             JumpReg { by } => {
-                let sum = self[Vs + 0] as u16 + u16::from_be_bytes(by);
-                copy!(&sum.to_be_bytes() => self PC);
+                let v0: u8 = self.read(Vs + 0)?;
+                let sum = v0 as u16 + by;
+                self.write(sum, PC)?;
             }
             SkipEqK { reg, val } => {
-                if self[Vs + reg] == val {
+                let vx: u8 = self.read(Vs + reg)?;
+                if vx == val {
                     self.next_instruction();
                 }
             }
-
             SkipNotEqK { reg, val } => {
-                if self[Vs + reg] != val {
+                let vx: u8 = self.read(Vs + reg)?;
+                if vx != val {
                     self.next_instruction();
                 }
             }
             SkipEq { a, b } => {
-                if self[Vs + a] == self[Vs + b] {
+                let (va, vb): (u8, u8) = (self.read(Vs + a)?, self.read(Vs + b)?);
+                if va == vb {
                     self.next_instruction();
                 }
             }
             SkipNotEq { a, b } => {
-                if self[Vs + a] != self[Vs + b] {
+                let (va, vb): (u8, u8) = (self.read(Vs + a)?, self.read(Vs + b)?);
+                if va != vb {
                     self.next_instruction();
                 }
             }
-            SetV { reg, to } => self[Vs + reg] = to,
-            IncV { reg, by } => self[Vs + reg] = self[Vs + reg].wrapping_add(by),
-            SetI { to } => copy!(&to => self I),
-            GetRand { reg, mask } => self[Vs + reg] = random::<u8>() & mask,
+            SetV { reg, to } => self.write(to, Vs + reg)?,
+            IncV { reg, by } => {
+                let vx: u8 = self.read(Vs + reg)?;
+                self.write(vx + by, Vs + reg)?;
+            }
+            SetI { to } => self.write(to, I)?,
+            GetRand { reg, mask } => self.write(random::<u8>() & mask, Vs + reg)?,
             SkipPressed { key } => {
-                let reg = read!(u8 from self Vs at key);
-                let pressed = read!(u8 from self KEY);
+                let reg: u8 = self.read(Vs + key)?;
+                let pressed: u8 = self.read(KEY)?;
                 if reg == pressed {
                     self.next_instruction();
                 }
             }
             SkipNotPressed { key } => {
-                let reg = read!(u8 from self Vs at key);
-                let pressed = read!(u8 from self KEY);
+                let reg: u8 = self.read(Vs + key)?;
+                let pressed: u8 = self.read(KEY)?;
                 if reg != pressed {
                     self.next_instruction();
                 }
             }
             ReadKey { to } => todo!("set up blocking"),
-            ReadDelay { to } => self[Vs + to] = self[DT],
-            SetDelay { with } => self[DT] = self[Vs + with],
-            SetSound { with } => self[ST] = self[Vs + with],
+            ReadDelay { to } => {
+                let dt: u8 = self.read(DT)?;
+                self.write(dt, Vs + to)?;
+            }
+            SetDelay { with } => {
+                let vx: u8 = self.read(Vs + with)?;
+                self.write(vx, DT)?;
+            }
+            SetSound { with } => {
+                let vx: u8 = self.read(Vs + with)?;
+                self.write(vx, ST)?;
+            }
             IncI { with } => {
-                let sum = self[Vs + with] as u16 + read!(u16 from self I);
-                copy!(&sum.to_be_bytes() => self I)
+                let i: u16 = self.read(I)?;
+                let vx = ByteArray::<u8>::read(self, Vs + with)? as u16;
+
+                self.write(vx + i, I)?;
             }
             GetFontSprite { of } => {
-                let adr = self[Vs + of] as u16 * 5;
-                copy!(&adr.to_be_bytes() => self I);
+                let vx: u8 = self.read(Vs + of)?;
+                let adr = vx as u16 * 5;
+
+                self.write(adr, I)?;
             }
             SaveRegs { upto } => {
-                let i = read!(u16 from self I);
-                let regs = read!(u128 from self Vs);
-                let mems = read!(u128 from self Memory);
+                let i: u16 = self.read(I)?;
+                let regs: u128 = self.read(Vs)?;
+                let mems: u128 = self.read(Memory)?;
 
                 let mask = !0u128 << ((0xf - upto) * 8);
 
-                copy!(&(
-                    (mems & !mask) | (regs & mask)
-                ).to_be_bytes() => self at i);
+                self.write((mems & !mask) | (regs & mask), i)?;
 
                 let sum = i + upto as u16 + 1;
-                copy!(&sum.to_be_bytes() => self I);
+                self.write(sum, I)?;
             }
             LoadRegs { upto } => {
-                let i = read!(u16 from self I);
-                let regs = read!(u128 from self Vs);
-                let mems = read!(u128 from self Memory at (i-0x200));
+                let i: u16 = self.read(I)?;
+                let regs: u128 = self.read(Vs)?;
+                let mems: u128 = self.read(Memory)?;
 
                 let mask = !0u128 << ((0xf - upto) * 8);
 
-                copy!(&(
-                    (mems & mask) | (regs & !mask)
-                ).to_be_bytes() => self Vs);
+                self.write((mems & mask) | (regs & !mask), Vs)?;
 
                 let sum = i + upto as u16 + 1;
-                copy!(&sum.to_be_bytes() => self I);
+                self.write(sum, I)?;
             }
             BCD { of } => {
-                let of = self[Vs + of];
-                copy!(&[
-                    (of / 100) % 10,
-                    (of / 10) % 10,
-                    (of / 1) % 10,
-                ] => self Memory );
+                let of: u8 = self.read(Vs + of)?;
+                let i: u16 = self.read(I)?;
+
+                self.write(
+                    [
+                        (of / 100) % 10,
+                        (of / 10) % 10,
+                        (of / 1) % 10, //
+                    ],
+                    i,
+                )?;
             }
-            Assign { a, to } => self[Vs + a] = self[Vs + to],
-            Or { a, b } => self[Vs + a] |= self[Vs + b],
-            And { a, b } => self[Vs + a] &= self[Vs + b],
-            Xor { a, b } => self[Vs + a] ^= self[Vs + b],
+            Assign { a, to } => {
+                let vb: u8 = self.read(Vs + to)?;
+                self.write(vb, Vs + a)?;
+            }
+            Or { a, b } => {
+                let (va, vb): (u8, u8) = (self.read(Vs + a)?, self.read(Vs + b)?);
+                self.write(va | vb, Vs + a)?;
+            }
+            And { a, b } => {
+                let (va, vb): (u8, u8) = (self.read(Vs + a)?, self.read(Vs + b)?);
+                self.write(va & vb, Vs + a)?;
+            }
+            Xor { a, b } => {
+                let (va, vb): (u8, u8) = (self.read(Vs + a)?, self.read(Vs + b)?);
+                self.write(va ^ vb, Vs + a)?;
+            }
             Add { a, b } => {
-                let res = self[Vs + a] as u16 + self[Vs + b] as u16;
-                self[Vs + a] = res as u8;
-                self[Vs + 0xf] = (res & 0xff00 == 0) as u8;
+                let (va, vb) = (self.read(Vs + a)?, self.read(Vs + b)?);
+                let (res, overflowed) = u8::overflowing_add(va, vb);
+                self.write(res, Vs + a)?;
+                self.write(overflowed as u8, Vs + 0xf)?;
             }
             Sub { a, b } => {
-                let (a_val, b_val) = (self[Vs + a], self[Vs + b]);
-                self[Vs + a] = a_val.wrapping_sub(b_val);
-                self[Vs + 0xf] = (a_val < b_val) as u8;
+                let (va, vb) = (self.read(Vs + a)?, self.read(Vs + b)?);
+                let (res, overflowed) = u8::overflowing_sub(va, vb);
+                self.write(res, Vs + a)?;
+                self.write(overflowed as u8, Vs + 0xf)?;
             }
             ShiftR { a, b } => {
-                self[Vs + 0xf] = self[Vs + b] & 0x1;
-                self[Vs + a] = self[Vs + b] >> 1;
+                let vb: u8 = self.read(Vs + b)?;
+                self.write(vb & 1, Vs + 0xf)?;
+                self.write(vb >> 1, Vs + a)?;
             }
             SubN { a, b } => {
-                let (a_val, b_val) = (self[Vs + a], self[Vs + b]);
-                self[Vs + a] = b_val.wrapping_sub(a_val);
-                self[Vs + 0xf] = (b_val < a_val) as u8;
+                let (va, vb) = (self.read(Vs + a)?, self.read(Vs + b)?);
+                let (res, overflowed) = u8::overflowing_sub(vb, va);
+                self.write(res, Vs + a)?;
+                self.write(overflowed as u8, Vs + 0xf)?;
             }
             ShiftL { a, b } => {
-                self[Vs + 0xf] = self[Vs + b] >> 7;
-                self[Vs + a] = self[Vs + b] << 1;
+                let vb: u8 = self.read(Vs + b)?;
+                self.write(vb >> 7, Vs + 0xf)?;
+                self.write(vb << 1, Vs + a)?;
             }
         }
+
+        Some(())
     }
-    pub fn step(&mut self) {
-        let pc = read!(u16 from self PC);
+    pub fn step(&mut self) -> Option<()> {
+        let pc: u16 = self.read(PC)?;
         assert!(pc < Memory.size() as _, "pc out of bounds");
 
-        let fragment = read!(u16 from self Memory at (pc - 0x200));
+        let fragment: u16 = self.read(pc)?;
         let opcode = fragment.into();
 
         self.execute(opcode);
 
         self.next_instruction();
+
+        Some(())
     }
 }
 
@@ -224,7 +275,7 @@ mod tests {
     fn default() {
         let chip = Chip8::default();
 
-        let pc = read!(u16 from chip PC);
+        let pc: u16 = chip.read(PC).unwrap();
         assert!(pc == INITIAL_PC);
     }
 
@@ -233,9 +284,13 @@ mod tests {
     fn clear() {
         let mut chip = Chip8::default();
 
-        copy!(&0xffffffu64.to_be_bytes() => chip Display);
+        chip.write(0xffffffu64, Display).unwrap();
+        println!(
+            "Mm: {:032x}",
+            ByteArray::<u128>::read(&chip, Display).unwrap()
+        );
         chip.execute(OpCode::Clear);
-        let display = read!(u128 from chip Display);
+        let display: u128 = chip.read(Display).unwrap();
 
         assert!(display == 0);
     }
@@ -245,13 +300,17 @@ mod tests {
     #[test]
     fn subroutines() {
         let mut chip = Chip8::default();
-        chip.execute(OpCode::Call { at: [0xfb, 0x03] });
-        let pc = read!(u16 from chip PC);
+        chip.execute(OpCode::Call { at: 0xfb03 });
+        chip.execute(OpCode::Call { at: 0xfb03 });
+        chip.execute(OpCode::Call { at: 0xfb03 });
+        let pc: u16 = chip.read(PC).unwrap();
 
         assert!(pc == 0xfb03);
 
         chip.execute(OpCode::Return);
-        let pc = read!(u16 from chip PC);
+        chip.execute(OpCode::Return);
+        chip.execute(OpCode::Return);
+        let pc: u16 = chip.read(PC).unwrap();
 
         assert!(pc == INITIAL_PC);
     }
@@ -265,50 +324,50 @@ mod tests {
     #[test]
     fn skips() {
         let mut chip = Chip8::default();
-        copy!(&[7] => chip Vs at 4);
+        chip.write(7u8, Vs + 4).unwrap();
 
         chip.execute(OpCode::SkipEqK { reg: 4, val: 0 });
-        let pc = read!(u16 from chip PC);
+        let pc: u16 = chip.read(PC).unwrap();
         assert!(pc == INITIAL_PC);
         chip.execute(OpCode::SkipEqK { reg: 4, val: 7 });
-        let pc = read!(u16 from chip PC);
+        let pc: u16 = chip.read(PC).unwrap();
         assert!(pc == INITIAL_PC + 2);
 
         chip.execute(OpCode::SkipNotEqK { reg: 4, val: 7 });
-        let pc = read!(u16 from chip PC);
+        let pc: u16 = chip.read(PC).unwrap();
         assert!(pc == INITIAL_PC + 2);
         chip.execute(OpCode::SkipNotEqK { reg: 4, val: 0 });
-        let pc = read!(u16 from chip PC);
+        let pc: u16 = chip.read(PC).unwrap();
         assert!(pc == INITIAL_PC + 4);
 
         chip.execute(OpCode::SkipEq { a: 4, b: 7 });
-        let pc = read!(u16 from chip PC);
+        let pc: u16 = chip.read(PC).unwrap();
         assert!(pc == INITIAL_PC + 4);
         chip.execute(OpCode::SkipEq { a: 7, b: 7 });
-        let pc = read!(u16 from chip PC);
+        let pc: u16 = chip.read(PC).unwrap();
         assert!(pc == INITIAL_PC + 6);
 
         chip.execute(OpCode::SkipNotEq { a: 7, b: 7 });
-        let pc = read!(u16 from chip PC);
+        let pc: u16 = chip.read(PC).unwrap();
         assert!(pc == INITIAL_PC + 6);
         chip.execute(OpCode::SkipNotEq { a: 4, b: 7 });
-        let pc = read!(u16 from chip PC);
+        let pc: u16 = chip.read(PC).unwrap();
         assert!(pc == INITIAL_PC + 8);
 
-        copy!(&[7] => chip KEY);
+        chip.write(7u8, KEY).unwrap();
 
         chip.execute(OpCode::SkipPressed { key: 0 });
-        let pc = read!(u16 from chip PC);
+        let pc: u16 = chip.read(PC).unwrap();
         assert!(pc == INITIAL_PC + 8);
         chip.execute(OpCode::SkipPressed { key: 4 });
-        let pc = read!(u16 from chip PC);
+        let pc: u16 = chip.read(PC).unwrap();
         assert!(pc == INITIAL_PC + 10);
 
         chip.execute(OpCode::SkipNotPressed { key: 4 });
-        let pc = read!(u16 from chip PC);
+        let pc: u16 = chip.read(PC).unwrap();
         assert!(pc == INITIAL_PC + 10);
         chip.execute(OpCode::SkipNotPressed { key: 0 });
-        let pc = read!(u16 from chip PC);
+        let pc: u16 = chip.read(PC).unwrap();
         assert!(pc == INITIAL_PC + 12);
     }
 
@@ -321,25 +380,25 @@ mod tests {
     fn set16() {
         let mut chip = Chip8::default();
 
-        chip.execute(OpCode::Jump { to: [0xfb, 0x03] });
-        let pc = read!(u16 from chip PC);
+        chip.execute(OpCode::Jump { to: 0xfb03 });
+        let pc: u16 = chip.read(PC).unwrap();
         assert!(pc == 0xfb03);
 
-        copy!(&[7] => chip Vs at 0);
-        chip.execute(OpCode::JumpReg { by: [0xfb, 0x03] });
-        let pc = read!(u16 from chip PC);
+        chip.write(7u8, Vs + 0).unwrap();
+        chip.execute(OpCode::JumpReg { by: 0xfb03 });
+        let pc: u16 = chip.read(PC).unwrap();
         assert!(pc == 0xfb0a);
 
-        chip.execute(OpCode::SetI { to: [0xfb, 0x03] });
-        let i = read!(u16 from chip I);
+        chip.execute(OpCode::SetI { to: 0xfb03 });
+        let i: u16 = chip.read(I).unwrap();
         assert!(i == 0xfb03);
 
         chip.execute(OpCode::GetFontSprite { of: 0 });
-        let i = read!(u16 from chip I);
+        let i: u16 = chip.read(I).unwrap();
         assert!(i == 7 * 5);
 
         chip.execute(OpCode::IncI { with: 0 });
-        let i = read!(u16 from chip I);
+        let i: u16 = chip.read(I).unwrap();
         assert!(i == 42);
     }
 
@@ -353,37 +412,37 @@ mod tests {
     #[test]
     fn set8() {
         let mut chip = Chip8::default();
-        copy!(&[7] => chip Vs at 4);
+        chip.write(7u8, Vs + 4).unwrap();
 
         chip.execute(OpCode::SetDelay { with: 4 });
-        let dt = read!(u8 from chip DT);
+        let dt: u8 = chip.read(DT).unwrap();
         assert!(dt == 7);
 
         chip.execute(OpCode::SetSound { with: 4 });
-        let st = read!(u8 from chip ST);
+        let st: u8 = chip.read(ST).unwrap();
         assert!(st == 7);
 
         chip.execute(OpCode::ReadDelay { to: 3 });
-        let v3 = read!(u8 from chip Vs at 3);
+        let v3: u8 = chip.read(Vs + 3).unwrap();
         assert!(v3 == 7);
 
         chip.execute(OpCode::SetV { reg: 2, to: 8 });
-        let v2 = read!(u8 from chip Vs at 2);
+        let v2: u8 = chip.read(Vs + 2).unwrap();
         assert!(v2 == 8);
 
         chip.execute(OpCode::IncV { reg: 2, by: 8 });
-        let v2 = read!(u8 from chip Vs at 2);
+        let v2: u8 = chip.read(Vs + 2).unwrap();
         assert!(v2 == 16);
 
-        // copy!(&[4] => chip KEY);
+        // chip.write(4u8 ,KEY);
         // chip.execute(OpCode::ReadKey { to: 1 });
-        // let v1 = read!(u8 from chip Vs at 1);
+        // let v1 : u8 = chip.read(Vs + 1).unwrap();
         // assert!(v1 == 4);
 
         const VAL: u8 = 0b11110000;
-        copy!(&[VAL] => chip Vs at 9);
+        chip.write(VAL, Vs + 9).unwrap();
         chip.execute(OpCode::GetRand { reg: 9, mask: !VAL });
-        let v9 = read!(u8 from chip Vs at 9);
+        let v9: u8 = chip.read(Vs + 9).unwrap();
         assert!(v9 != VAL);
     }
 
@@ -395,29 +454,29 @@ mod tests {
     #[test]
     fn save_load() {
         let mut chip = Chip8::default();
-        copy!(&[0x77] => chip Vs at 7);
-        copy!(&[0x44] => chip Vs at 4);
-        copy!(&(INITIAL_PC).to_be_bytes() => chip I);
-        copy!(&[0x55] => chip Memory at 5);
+        chip.write(0x77u8, Vs + 7).unwrap();
+        chip.write(0x44u8, Vs + 4).unwrap();
+        chip.write(INITIAL_PC, I).unwrap();
+        chip.write(0x55u8, Memory + 5).unwrap();
 
         chip.execute(OpCode::SaveRegs { upto: 4 });
-        let i = read!(u16 from chip I);
+        let i: u16 = chip.read(I).unwrap();
         assert!(i == INITIAL_PC + 4 + 1);
 
-        let M04 = read!(u8 from chip Memory at 4);
+        let M04: u8 = chip.read(Memory + 4).unwrap();
         assert!(M04 == 0x44);
 
-        copy!(&(INITIAL_PC).to_be_bytes() => chip I);
-        copy!(&[0x33] => chip Memory at 3);
+        chip.write(INITIAL_PC, I).unwrap();
+        chip.write(0x33u8, Memory + 3).unwrap();
         chip.execute(OpCode::LoadRegs { upto: 7 });
 
-        let i = read!(u16 from chip I);
+        let i: u16 = chip.read(I).unwrap();
         assert!(i == INITIAL_PC + 7 + 1);
 
-        let v3 = read!(u8 from chip Vs at 3);
+        let v3: u8 = chip.read(Vs + 3).unwrap();
         assert!(v3 == 0x33);
 
-        let v7 = read!(u8 from chip Vs at 7);
+        let v7: u8 = chip.read(Vs + 7).unwrap();
         assert!(v7 == 0x00);
     }
 

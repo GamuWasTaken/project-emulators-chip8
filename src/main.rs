@@ -10,9 +10,13 @@ use memops::*;
 use opcode::*;
 
 fn main() {
+    run();
+}
+
+fn run() {
     let mut chip = Chip8::default();
 
-    let program = include_bytes!("./maze.ch8");
+    let program = include_bytes!("./chip8-logo.ch8");
     // let program = [0xd0, 0x15];
 
     chip.load_data(FONT.as_flattened());
@@ -30,20 +34,22 @@ fn main() {
     }
 }
 
-fn simple_display(chip: &Chip8, frame_number: u32) {
+fn simple_display(chip: &Chip8, frame_number: u32) -> Option<()> {
     let mut frame = String::new();
     for y in 0..32 {
-        let line = read!(u64 from chip Display at (y*8));
+        let line: u64 = chip.read(Display + y * 8)?;
         frame.push_str(format!("{:064b}\n", line).as_str());
     }
 
-    let pc = read!(u16 from chip PC);
-    let vs = read!(u128 from chip Vs);
-    let i = read!(u16 from chip I);
+    let pc: u16 = chip.read(PC)?;
+    let vs: u128 = chip.read(Vs)?;
+    let i: u16 = chip.read(I)?;
 
     println!("{}Frame{frame_number:5}_", "_".repeat(54));
     println!("{}", frame.replace("0", "░").replace("1", "█"));
-    println!("pc:({:x}) | v:{vs:032x?} | i:{i:04x}", pc - 0x200,);
+    println!("pc:({:x}) | v:{vs:032x?} | i:{i:04x}", (pc as i32 - 0x200),);
+
+    Some(())
 }
 
 pub const FONT: [[u8; 5]; 16] = [
