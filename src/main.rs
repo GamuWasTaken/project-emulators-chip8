@@ -16,16 +16,21 @@ fn main() {
 fn run() {
     let mut chip = Chip8::default();
 
-    let program = include_bytes!("./chip8-logo.ch8");
-    // let program = [0xd0, 0x15];
+    let program = include_bytes!("./test.ch8");
+
+    // let test_program: [u16; _] = [
+    //     //
+    //     0x6001, 0xD005, 0x00EE,
+    // ];
+    // let program: Vec<u8> = test_program
+    //     .into_iter()
+    //     .map(u16::to_be_bytes)
+    //     .flatten()
+    //     .collect();
+    // let program = program.as_slice();
 
     chip.load_data(FONT.as_flattened());
     chip.load_program(program);
-
-    // for (i, code) in OpCode::parse_program(program).iter().enumerate() {
-    //     println!("{i:3} : {:?}", code);
-    // }
-    // return;
 
     for i in 0.. {
         chip.step();
@@ -42,12 +47,14 @@ fn simple_display(chip: &Chip8, frame_number: u32) -> Option<()> {
     }
 
     let pc: u16 = chip.read(PC)?;
+    let opcode: u16 = chip.read(pc)?;
     let vs: u128 = chip.read(Vs)?;
     let i: u16 = chip.read(I)?;
 
     println!("{}Frame{frame_number:5}_", "_".repeat(54));
     println!("{}", frame.replace("0", "░").replace("1", "█"));
     println!("pc:({:x}) | v:{vs:032x?} | i:{i:04x}", (pc as i32 - 0x200),);
+    println!("({:02x}) : {:x?}", opcode, OpCode::from(opcode));
 
     Some(())
 }

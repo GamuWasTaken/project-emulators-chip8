@@ -22,9 +22,9 @@ impl Chip8 {
         assert!(sp < 16, "sp over bounds {}", sp);
 
         let pc: u16 = self.read(PC)?;
-        self.write(pc, Stack + sp * 2)?;
+        self.write(pc, Stack + sp)?;
 
-        self.write(sp + 1, SP)?;
+        self.write(sp + 2, SP)?;
         Some(())
     }
     /// Pop from top of stack into PC
@@ -32,11 +32,11 @@ impl Chip8 {
         let sp: u8 = ByteArray::<u8>::read(self, SP)?;
         assert!(sp != 0, "sp under bounds");
 
-        let sp = sp - 1;
+        let sp = sp - 2;
         self.write(sp, SP)?;
-        self.read(Stack + sp * 2)
+        self.read(Stack + sp)
     }
-    pub fn load_program(&mut self, program: &[u8]) -> Option<()> {
+    pub fn load_program<'a>(&'a mut self, program: &[u8]) -> Option<()> {
         self.0[(Memory as usize)..(Memory as usize + program.len())].copy_from_slice(program);
         Some(())
     }
@@ -55,13 +55,13 @@ impl Chip8 {
         // TODO add guards
         use OpCode::*;
         match opcode {
-            NoOp { .. } => (),
+            NoOp { .. } => panic!("noop"),
             Clear => self.write([0u8; Display.size()], Display)?,
             Draw { x, y, size } => {
-                assert!(x < 64, "x out of range of screen");
-                assert!(y < 32, "y out of range of screen");
+                assert!(x <= 0x3f, "x out of range of screen");
+                assert!(y <= 0x1f, "y out of range of screen");
                 assert!(size > 0, "size bellow range");
-                assert!(size < 16, "size over range");
+                assert!(size <= 0xf, "size over range");
 
                 let (x, y): (u8, u8) = (self.read(Vs + x)?, self.read(Vs + y)?);
                 let i: u16 = self.read(I)?;
@@ -69,7 +69,7 @@ impl Chip8 {
                 for n in 0..size {
                     let sprite =
                         (ByteArray::<u8>::read(self, i + n as u16)? as u64) << (64 - 8) >> x;
-                    let line_start = y + n * 8;
+                    let line_start = (y + n) * 8;
                     let screen: u64 = self.read(Display + line_start)?;
 
                     let xor = sprite ^ screen;
@@ -119,7 +119,7 @@ impl Chip8 {
             SetV { reg, to } => self.write(to, Vs + reg)?,
             IncV { reg, by } => {
                 let vx: u8 = self.read(Vs + reg)?;
-                self.write(vx + by, Vs + reg)?;
+                self.write(vx.wrapping_add(by), Vs + reg)?;
             }
             SetI { to } => self.write(to, I)?,
             GetRand { reg, mask } => self.write(random::<u8>() & mask, Vs + reg)?,

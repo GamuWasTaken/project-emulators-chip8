@@ -20,7 +20,7 @@ impl std::ops::IndexMut<std::ops::Range<usize>> for Chip8 {
     }
 }
 
-pub trait ByteArray<'a, T: ByteList<'a, Output: AsSlice<u8>>>:
+pub trait ByteArray<'a, T: ByteList<'a, Output: ToSlice<u8>>>:
     std::ops::IndexMut<std::ops::Range<usize>, Output = [u8]>
 {
     #[must_use]
@@ -45,7 +45,7 @@ pub trait ByteList<'a>: Sized {
     fn to_list(self) -> Self::Output;
 }
 
-pub trait AsSlice<T> {
+pub trait ToSlice<T> {
     fn to_slice(&self) -> &[T];
 }
 
@@ -81,7 +81,7 @@ impl<'a, const K: usize> ByteList<'a> for [u8; K] {
         self
     }
 }
-impl<const K: usize> AsSlice<u8> for [u8; K] {
+impl<const K: usize> ToSlice<u8> for [u8; K] {
     fn to_slice(&self) -> &[u8] {
         self.as_slice()
     }
@@ -172,7 +172,6 @@ impl std::ops::Add<u8> for Offset {
         Offset::new(self.0, self.1 + rhs as u16)
     }
 }
-// Index by Region + u16
 impl std::ops::Add<u8> for Region {
     type Output = Offset;
 
@@ -192,14 +191,5 @@ impl std::ops::Add<i32> for Region {
 
     fn add(self, rhs: i32) -> Self::Output {
         self + rhs as u16
-    }
-}
-
-// Index by Region + Range
-impl std::ops::Add<std::ops::Range<usize>> for Region {
-    type Output = std::ops::Range<Offset>;
-
-    fn add(self, rhs: std::ops::Range<usize>) -> Self::Output {
-        (self + rhs.start as u16)..(self + rhs.end as u16)
     }
 }
