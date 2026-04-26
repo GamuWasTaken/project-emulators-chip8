@@ -1,4 +1,7 @@
-use std::{thread::sleep, time::Duration};
+use std::{
+    thread::sleep,
+    time::{Duration, Instant},
+};
 
 pub mod chip8;
 pub mod opcode;
@@ -32,11 +35,26 @@ fn run() {
     chip.load_data(FONT.as_flattened());
     chip.load_program(program);
 
+    let fps = 60;
+    let frame_length = Duration::from_secs(1) / fps;
+
+    print!("\x1b[2J\x1b[H");
     for i in 0.. {
+        let time_start = Instant::now();
+
         chip.step();
         simple_display(&chip, i);
-        sleep(Duration::from_nanos(100));
+
+        if ByteArray::<u16>::read(&chip, PC).unwrap() == 0x3dcu16 {
+            break;
+        }
+
+        let time_end = time_start.elapsed();
+        if time_end < frame_length {
+            sleep(frame_length - time_end);
+        }
     }
+    print!("\x1b[2J\x1b[H");
 }
 
 fn simple_display(chip: &Chip8, frame_number: u32) -> Option<()> {
@@ -46,17 +64,35 @@ fn simple_display(chip: &Chip8, frame_number: u32) -> Option<()> {
         frame.push_str(format!("{:064b}\n", line).as_str());
     }
 
-    let pc: u16 = chip.read(PC)?;
-    let opcode: u16 = chip.read(pc)?;
-    let vs: u128 = chip.read(Vs)?;
-    let i: u16 = chip.read(I)?;
+    // let pc: u16 = chip.read(PC)?;
+    // let opcode: u16 = chip.read(pc)?;
+    // let vs: u128 = chip.read(Vs)?;
+    // let i: u16 = chip.read(I)?;
 
-    println!("{}Frame{frame_number:5}_", "_".repeat(54));
+    // println!("{}Frame{frame_number:5}", "_".repeat(54));
     println!("{}", frame.replace("0", "░").replace("1", "█"));
-    println!("pc:({:x}) | v:{vs:032x?} | i:{i:04x}", (pc as i32 - 0x200),);
-    println!("({:02x}) : {:x?}", opcode, OpCode::from(opcode));
+    // println!("pc:({pc:x}) | v:{} | i:{i:04x}", format_registers(vs));
+    // println!(" ({:02x}) : {:x?}", opcode, OpCode::from(opcode));
 
+    print!("\x1b[64A\x1b[32D");
     Some(())
+}
+
+fn format_registers(regs: u128) -> String {
+    let mut regs = format!("{regs:032x}");
+    for i in (0..regs.len() / 2).rev() {
+        regs.insert_str(
+            i * 2,
+            if i % 2 == 0 {
+                //
+                "\x1B[0m\x1B[1;39;49m"
+            } else {
+                "\x1B[0m\x1B[2;39;49m"
+            },
+        );
+    }
+
+    regs + "\x1B[0m"
 }
 
 pub const FONT: [[u8; 5]; 16] = [

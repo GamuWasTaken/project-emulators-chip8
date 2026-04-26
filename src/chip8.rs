@@ -15,6 +15,11 @@ impl Default for Chip8 {
     }
 }
 
+pub enum PostExecute {
+    Next,
+    Stay,
+}
+
 impl Chip8 {
     /// Add current PC to top of stack
     fn push(&mut self) -> Option<()> {
@@ -51,7 +56,7 @@ impl Chip8 {
         Some(())
     }
 
-    pub fn execute(&mut self, opcode: OpCode) -> Option<()> {
+    pub fn execute(&mut self, opcode: OpCode) -> Option<PostExecute> {
         // TODO add guards
         use OpCode::*;
         match opcode {
@@ -82,15 +87,20 @@ impl Chip8 {
                 let adr = self.pop()?;
                 self.write(adr, PC)?;
             }
-            Jump { to } => self.write(to, PC)?,
+            Jump { to } => {
+                self.write(to, PC)?;
+                return Some(PostExecute::Stay);
+            }
             Call { at } => {
                 self.push()?;
                 self.write(at, PC)?;
+                return Some(PostExecute::Stay);
             }
             JumpReg { by } => {
                 let v0: u8 = self.read(Vs + 0)?;
                 let sum = v0 as u16 + by;
                 self.write(sum, PC)?;
+                return Some(PostExecute::Stay);
             }
             SkipEqK { reg, val } => {
                 let vx: u8 = self.read(Vs + reg)?;
@@ -165,11 +175,11 @@ impl Chip8 {
             SaveRegs { upto } => {
                 let i: u16 = self.read(I)?;
                 let regs: u128 = self.read(Vs)?;
-                let mems: u128 = self.read(Memory)?;
+                let mems: u128 = self.read(i)?;
 
                 let mask = !0u128 << ((0xf - upto) * 8);
-
-                self.write((mems & !mask) | (regs & mask), i)?;
+                let res = (mems & !mask) | (regs & mask);
+                self.write(res, i)?;
 
                 let sum = i + upto as u16 + 1;
                 self.write(sum, I)?;
@@ -177,11 +187,11 @@ impl Chip8 {
             LoadRegs { upto } => {
                 let i: u16 = self.read(I)?;
                 let regs: u128 = self.read(Vs)?;
-                let mems: u128 = self.read(Memory)?;
+                let mems: u128 = self.read(i)?;
 
                 let mask = !0u128 << ((0xf - upto) * 8);
-
-                self.write((mems & mask) | (regs & !mask), Vs)?;
+                let res = (mems & mask) | (regs & !mask);
+                self.write(res, Vs)?;
 
                 let sum = i + upto as u16 + 1;
                 self.write(sum, I)?;
@@ -245,7 +255,7 @@ impl Chip8 {
             }
         }
 
-        Some(())
+        Some(PostExecute::Next)
     }
     pub fn step(&mut self) -> Option<()> {
         let pc: u16 = self.read(PC)?;
@@ -254,9 +264,10 @@ impl Chip8 {
         let fragment: u16 = self.read(pc)?;
         let opcode = fragment.into();
 
-        self.execute(opcode);
-
-        self.next_instruction();
+        match self.execute(opcode)? {
+            PostExecute::Next => self.next_instruction()?,
+            PostExecute::Stay => (),
+        }
 
         Some(())
     }

@@ -139,7 +139,7 @@ impl From<&[u8; 2]> for OpCode {
             (0x8, a, b, 6) => ShiftR { a, b },
             (0x8, a, b, 7) => SubN { a, b },
             (0x8, a, b, 0xe) => ShiftL { a, b },
-            other => {
+            _ => {
                 // panic!("Unknown opcode {:x?}", other);
                 NoOp {
                     val: stitch![0, 0, 0, 0],
