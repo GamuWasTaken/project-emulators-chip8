@@ -1,7 +1,8 @@
-use super::opcode::*;
-use rand::random;
+mod memops;
+mod opcode;
 
-use super::memops::*;
+pub use memops::*;
+pub use opcode::*;
 
 #[derive(Debug, Clone)]
 pub struct Chip8(pub(crate) [u8; 0x1000]);
@@ -15,9 +16,10 @@ impl Default for Chip8 {
     }
 }
 
-pub enum PostExecute {
+enum PostExecute {
     Next,
     Stay,
+    Wait,
 }
 
 impl Chip8 {
@@ -49,15 +51,17 @@ impl Chip8 {
         self.0[(Data as usize)..(Data as usize + data.len())].copy_from_slice(data);
         Some(())
     }
-    pub fn next_instruction(&mut self) -> Option<()> {
+    pub fn load_key(&mut self, key: u8) -> Option<()> {
+        self.write(key, KEY)
+    }
+    fn next_instruction(&mut self) -> Option<()> {
         let next = ByteArray::<u16>::read(self, PC)? + 2;
         self.write(next, PC)?;
 
         Some(())
     }
 
-    pub fn execute(&mut self, opcode: OpCode) -> Option<PostExecute> {
-        // TODO add guards
+    fn execute(&mut self, opcode: OpCode) -> Option<PostExecute> {
         use OpCode::*;
         match opcode {
             NoOp { .. } => panic!("noop"),
@@ -132,7 +136,7 @@ impl Chip8 {
                 self.write(vx.wrapping_add(by), Vs + reg)?;
             }
             SetI { to } => self.write(to, I)?,
-            GetRand { reg, mask } => self.write(random::<u8>() & mask, Vs + reg)?,
+            GetRand { reg, mask } => self.write(rand::random::<u8>() & mask, Vs + reg)?,
             SkipPressed { key } => {
                 let reg: u8 = self.read(Vs + key)?;
                 let pressed: u8 = self.read(KEY)?;
@@ -147,7 +151,7 @@ impl Chip8 {
                     self.next_instruction();
                 }
             }
-            ReadKey { to } => todo!("set up blocking"),
+            ReadKey { to } => todo!("set up blocking"), // Sleep until KEY is not ff,
             ReadDelay { to } => {
                 let dt: u8 = self.read(DT)?;
                 self.write(dt, Vs + to)?;
@@ -257,26 +261,40 @@ impl Chip8 {
 
         Some(PostExecute::Next)
     }
-    pub fn step(&mut self) -> Option<()> {
+    fn step_timers(&mut self) -> Option<()> {
+        let dt: u8 = self.read(DT)?;
+        let st: u8 = self.read(ST)?;
+
+        self.write(dt.saturating_sub(1), DT)?;
+        self.write(st.saturating_sub(1), ST)?;
+
+        Some(())
+    }
+    pub fn step(&mut self) -> Option<StepResult> {
         let pc: u16 = self.read(PC)?;
         assert!(pc < Memory.size() as _, "pc out of bounds");
 
         let fragment: u16 = self.read(pc)?;
-        let opcode = fragment.into();
-
+        let opcode = fragment.try_into().ok()?;
         match self.execute(opcode)? {
             PostExecute::Next => self.next_instruction()?,
             PostExecute::Stay => (),
+            PostExecute::Wait => return Some(StepResult::WaitKey),
         }
 
-        Some(())
+        self.step_timers()?;
+
+        Some(StepResult::Continue)
     }
+}
+
+pub enum StepResult {
+    WaitKey,
+    Continue,
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(non_snake_case)]
-
     use super::*;
 
     const INITIAL_PC: u16 = 0x200;
@@ -474,8 +492,8 @@ mod tests {
         let i: u16 = chip.read(I).unwrap();
         assert!(i == INITIAL_PC + 4 + 1);
 
-        let M04: u8 = chip.read(Memory + 4).unwrap();
-        assert!(M04 == 0x44);
+        let m04: u8 = chip.read(Memory + 4).unwrap();
+        assert!(m04 == 0x44);
 
         chip.write(INITIAL_PC, I).unwrap();
         chip.write(0x33u8, Memory + 3).unwrap();

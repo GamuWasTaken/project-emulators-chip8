@@ -61,21 +61,26 @@ impl OpCode {
             panic!("Program opcodes are unaligned")
         };
 
-        chunks.into_iter().map(OpCode::from).collect()
+        chunks
+            .into_iter()
+            .filter_map(|c| c.try_into().ok())
+            .collect()
     }
 }
-impl From<u16> for OpCode {
-    fn from(value: u16) -> Self {
+impl TryFrom<u16> for OpCode {
+    fn try_from(value: u16) -> Result<Self, ()> {
         let [hi, lo] = value.to_be_bytes();
-        Into::into(&[hi, lo])
+        TryInto::try_into(&[hi, lo])
     }
+
+    type Error = ();
 }
-impl From<&[u8; 2]> for OpCode {
-    fn from(value: &[u8; 2]) -> Self {
+impl TryFrom<&[u8; 2]> for OpCode {
+    fn try_from(value: &[u8; 2]) -> Result<Self, Self::Error> {
         let [a, b, c, d] = OpCode::as_nibbles(value);
 
         use OpCode::*;
-        match (a, b, c, d) {
+        Ok(match (a, b, c, d) {
             (0, 0, 0xe, 0) => Clear,
             (0xd, x, y, size) => Draw { x, y, size },
             (0, 0, 0xe, 0xe) => Return,
@@ -145,6 +150,8 @@ impl From<&[u8; 2]> for OpCode {
                     val: stitch![0, 0, 0, 0],
                 }
             }
-        }
+        })
     }
+
+    type Error = ();
 }

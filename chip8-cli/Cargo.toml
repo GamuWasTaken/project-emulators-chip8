@@ -1,0 +1,8 @@
+[package]
+name = "chip8-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chip8 = { path = "../chip8" }
+k_board = "1.3.1"

@@ -3,14 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub mod chip8;
-pub mod opcode;
-
-pub mod memops;
-
 use chip8::*;
-use memops::*;
-use opcode::*;
 
 fn main() {
     run();
@@ -18,19 +11,9 @@ fn main() {
 
 fn run() {
     let mut chip = Chip8::default();
+    let keyboard = k_board::keyboard::Keyboard::new();
 
     let program = include_bytes!("./test.ch8");
-
-    // let test_program: [u16; _] = [
-    //     //
-    //     0x6001, 0xD005, 0x00EE,
-    // ];
-    // let program: Vec<u8> = test_program
-    //     .into_iter()
-    //     .map(u16::to_be_bytes)
-    //     .flatten()
-    //     .collect();
-    // let program = program.as_slice();
 
     chip.load_data(FONT.as_flattened());
     chip.load_program(program);
@@ -42,11 +25,11 @@ fn run() {
     for i in 0.. {
         let time_start = Instant::now();
 
-        chip.step();
+        let step = chip.step();
         simple_display(&chip, i);
 
-        if ByteArray::<u16>::read(&chip, PC).unwrap() == 0x3dcu16 {
-            break;
+        if let Some(StepResult::WaitKey) = step {
+            // TODO make a thread that listens for keys and messages us via mpsc of the keys, once per frame take a key and put it in key, 'waitKey' can be handled by not calling step until a new key is loaded
         }
 
         let time_end = time_start.elapsed();
@@ -113,87 +96,3 @@ pub const FONT: [[u8; 5]; 16] = [
     [0xF0, 0x80, 0xF0, 0x80, 0xF0], // E
     [0xF0, 0x80, 0xF0, 0x80, 0x80], // F
 ];
-
-/*
-# Chip-8
-
-Memory: 4k, 4096 memory locations (0x1000) * 8bits
-
-    0x1000 | End
-    0x0F00 | Display
-    0x0EA0 | Call stack, internal use and others
-    0x0200 | Free
-    0x0000 | Data
-
-Registers:
-
-    8-bit  v0..vf (vf doubles as a flag for some ops)
-    16-bit I
-
-    16-bit PC
-    8-bit  SP
-
-Stack:
-
-    store return addresses for subroutines
-    16 * 16-bit
-
-Timers: 2 60hz
-
-    delay DT rw
-    sound ST w (beep if not 0)
-
-Input:
-
-    hex keyboard (16 keys 0..F)
-
-Output:
-
-    graphics 64*32 pixels monochrome
-        sprites 8*1..15 xor'd to screen
-        on pixel off'd VF is set to 1 else 0 (collision detection)
-    sound beep if sound timer is not 0
-
-Opcodes: 36 2-byte big-endian opcodes
-
-    0NNN | Call | noop
-    00E0 | Disp | clear screen
-    DXYN | Disp | draw sprite at VX,VY with height N from I (wraps)
-    00EE | Flow | return (pop into I)
-    1NNN | Flow | jump (set I to NNN)
-    2NNN | Flow | call subroutine (push and set I to NNN)
-    BNNN | Flow | PC = V0 + NNN
-    3XNN | Cond | PC + 1 if VX == NN
-    4XNN | Cond | PC + 1 if VX != NN
-    5XY0 | Cond | PC + 1 if VX == VY
-    9XY0 | Cond | PC + 1 if VX != VY
-    6XNN | Cons | VX = NN
-    7XNN | Cons | VX += NN (doesnt flag overflow)
-    ANNN | Load | I = NNN
-    CXNN | Rand | VX = rand() & NN
-    EX9E | Read | PC + 1 if key() == VX
-    EXA1 | Read | PC + 1 if key() != VX
-    FX0A | Read | Vx = key() (blocking)
-    FX07 | Time | VX = DT
-    FX15 | Time | DT = VX
-    FX18 | Time | ST = VX
-    FX1E | Memo | I += VX
-    FX29 | Memo | I = sprite_addr[VX]
-    FX55 | Memo | dump data regs at I
-    FX65 | Memo | load data regs from I
-    FX33 | Repr | ex: VX = 234, I[0] = 2, I[1] = 3, I[2] = 4
-
-    --- ALU --- flag VF on over/under flow
-    8XY0 | Set
-    8XY1 | Or
-    8XY2 | And
-    8XY3 | Xor
-    8XY4 | Add
-    8XY5 | Sub
-    8XY6 | SftR
-    8XY7 | Sub * -1
-    8XYE | SftL
-
-Font:
-    4*5 bit 0..F padded to 8*5
-*/
