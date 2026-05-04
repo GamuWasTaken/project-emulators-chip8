@@ -16,7 +16,8 @@ impl Default for Chip8 {
     }
 }
 
-enum PostExecute {
+#[derive(Debug, Clone, Copy)]
+pub enum PostExecute {
     Next,
     Stay,
     Wait,
@@ -151,7 +152,7 @@ impl Chip8 {
                     self.next_instruction();
                 }
             }
-            ReadKey { to } => todo!("set up blocking"), // Sleep until KEY is not ff,
+            ReadKey { .. } => return Some(PostExecute::Wait), // Sleep until KEY is not ff,
             ReadDelay { to } => {
                 let dt: u8 = self.read(DT)?;
                 self.write(dt, Vs + to)?;
@@ -261,7 +262,8 @@ impl Chip8 {
 
         Some(PostExecute::Next)
     }
-    fn step_timers(&mut self) -> Option<()> {
+    /// Ticks the timers
+    pub fn step_timers(&mut self) -> Option<()> {
         let dt: u8 = self.read(DT)?;
         let st: u8 = self.read(ST)?;
 
@@ -270,27 +272,22 @@ impl Chip8 {
 
         Some(())
     }
-    pub fn step(&mut self) -> Option<StepResult> {
+    /// Executes the opcode at pc
+    pub fn step(&mut self) -> Option<PostExecute> {
         let pc: u16 = self.read(PC)?;
         assert!(pc < Memory.size() as _, "pc out of bounds");
 
         let fragment: u16 = self.read(pc)?;
         let opcode = fragment.try_into().ok()?;
-        match self.execute(opcode)? {
-            PostExecute::Next => self.next_instruction()?,
-            PostExecute::Stay => (),
-            PostExecute::Wait => return Some(StepResult::WaitKey),
+
+        let result = self.execute(opcode)?;
+
+        if let PostExecute::Next = result {
+            self.next_instruction()?;
         }
 
-        self.step_timers()?;
-
-        Some(StepResult::Continue)
+        Some(result)
     }
-}
-
-pub enum StepResult {
-    WaitKey,
-    Continue,
 }
 
 #[cfg(test)]
