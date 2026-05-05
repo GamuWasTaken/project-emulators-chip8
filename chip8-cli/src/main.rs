@@ -1,19 +1,22 @@
 use std::{
-    env, process,
+    env,
+    fs::read,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        Arc,
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
-    thread::{self, sleep},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use chip8::*;
 use k_board::{keyboard::Keyboard, keys::Keys};
+mod timing;
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq)]
 enum ChipArgs {
     NoGraphics,
+    Parse,
+    Program(String),
 }
 impl TryFrom<String> for ChipArgs {
     type Error = ();
@@ -21,81 +24,49 @@ impl TryFrom<String> for ChipArgs {
     fn try_from(value: String) -> Result<Self, Self::Error> {
         match value.as_str() {
             "-d" | "--no-display" => Ok(ChipArgs::NoGraphics),
-            _ => Err(()),
+            "-p" | "--parse" => Ok(ChipArgs::Parse),
+            _ => Ok(ChipArgs::Program(value)),
         }
     }
 }
 fn main() {
-    let args: Vec<_> = env::args()
-        .into_iter()
-        .filter_map(|a| ChipArgs::try_from(a).ok())
-        .collect();
-
-    run(args);
+    run();
 }
-// TODO 1dcell panics because of shift right overflow
 
-fn run(args: Vec<ChipArgs>) -> Option<()> {
+// TODO slipperyslope runs incorrectly, seems to be collision code
+
+struct HarnessOptions {
+    program: Vec<u8>,
+    display: bool,
+}
+
+fn harness(options: HarnessOptions, exit: Arc<AtomicBool>, key: Arc<AtomicU8>) -> Option<()> {
     let mut chip = Chip8::default();
 
-    // Read keys continuously
-    let read_key = Arc::new(Mutex::new(Keys::Null));
-    let write_key = read_key.clone();
-    thread::spawn(move || read_keys(write_key));
+    chip.load_data(FONT.as_flattened())?;
+    chip.load_program(&options.program)?;
 
-    let stop_sig = Arc::new(AtomicBool::new(false));
-    {
-        let stop_sig = stop_sig.clone();
-        ctrlc::set_handler(move || stop_sig.store(true, Ordering::SeqCst)).unwrap();
-    }
-
-    let program = include_bytes!("./slipperyslope.ch8");
-
-    chip.load_data(FONT.as_flattened());
-    chip.load_program(program);
-
-    let fps = 60 * 5;
+    let fps = 60 * 10;
     let frame_length = Duration::from_secs(1) / fps;
 
-    let mut previous_step_output = PostExecute::Stay;
+    let mut prev_output = PostExecute::Stay;
 
     print!("\x1b[2J\x1b[H");
-    for i in 0.. {
-        if stop_sig.load(Ordering::SeqCst) {
+    for (i, _) in timing::Every::new(frame_length).enumerate() {
+        if exit.load(Ordering::SeqCst) {
             break;
         }
+        let key = key.load(Ordering::Acquire);
 
-        let time_start = Instant::now();
-
+        chip.load_key(key)?;
         chip.step_timers()?;
 
-        let pressed_key;
-        {
-            let key = read_key.lock().ok()?;
-            pressed_key = *key;
+        if prev_output != PostExecute::Wait || key != 0xff {
+            prev_output = chip.step()?;
         }
 
-        match (previous_step_output, pressed_key) {
-            (PostExecute::Wait, Keys::Null) => (),
-            _ => {
-                let traduction = KEY_MAP
-                    .into_iter()
-                    .find(|(k, _)| *k == pressed_key)
-                    .map(|(_, v)| v)
-                    .unwrap_or(0xff);
-
-                chip.load_key(traduction);
-                previous_step_output = chip.step()?;
-
-                if !args.contains(&ChipArgs::NoGraphics) {
-                    simple_display(&chip, i);
-                }
-            }
-        }
-
-        let time_end = time_start.elapsed();
-        if time_end < frame_length {
-            sleep(frame_length - time_end);
+        if options.display {
+            simple_display(&chip, i as u32, key)?;
         }
     }
     print!("\x1b[2J\x1b[H");
@@ -103,29 +74,113 @@ fn run(args: Vec<ChipArgs>) -> Option<()> {
     Some(())
 }
 
-fn read_keys(pressed_key: Arc<Mutex<Keys>>) {
-    for key in Keyboard::new() {
-        let mut v = pressed_key.lock().unwrap();
-        *v = key;
+fn input(key: Arc<AtomicU8>, exit: Arc<AtomicBool>) {
+    let keyboard = Keyboard::new();
+
+    for pressed_key in keyboard {
+        if exit.load(Ordering::Acquire) {
+            break;
+        }
+
+        let traduction = KEY_MAP
+            .into_iter()
+            .find(|(k, _)| *k == pressed_key)
+            .map(|(_, v)| v)
+            .unwrap_or(0xff);
+
+        key.swap(traduction, Ordering::Release);
     }
 }
 
-fn simple_display(chip: &Chip8, frame_number: u32) -> Option<()> {
+fn run() -> Option<()> {
+    let args: Vec<_> = env::args()
+        .into_iter()
+        .skip(1)
+        .filter_map(|a| ChipArgs::try_from(a).ok())
+        .collect();
+
+    let path = args
+        .iter()
+        .find_map(|a| match a {
+            ChipArgs::Program(p) => Some(p.to_owned()),
+            _ => None,
+        })
+        .or(Some("./src/test.ch8".into()))?;
+
+    let program = match read(path.clone()) {
+        Ok(p) => p,
+        Err(e) => panic!("Something happened loading the file: {e}"),
+    };
+
+    if args.contains(&ChipArgs::Parse) {
+        for opcode in OpCode::parse_program(&program).chunks(5) {
+            println!("{opcode:?}");
+        }
+        println!("Program: {path}");
+        return Some(());
+    }
+
+    let options = HarnessOptions {
+        program,
+        display: !args.contains(&ChipArgs::NoGraphics),
+    };
+
+    // Handle kill signals
+    let exit = Arc::new(AtomicBool::new(false));
+    let _exit = exit.clone();
+    ctrlc::set_handler(move || _exit.store(true, Ordering::SeqCst)).ok()?;
+
+    // Read keys continuously
+    let key = Arc::new(AtomicU8::new(0xff));
+    let _key = key.clone();
+    let _exit = exit.clone();
+    let input = std::thread::Builder::new()
+        .name("Veronica".into())
+        .spawn(move || {
+            input(_key, _exit);
+            println!("Input exited")
+        })
+        .ok()?;
+
+    // Harness
+    let _key = key.clone();
+    let _exit = exit.clone();
+    let harness = std::thread::Builder::new()
+        .name("Staicy".into())
+        .spawn(move || {
+            harness(options, _exit, _key);
+            println!("Harness exited")
+        })
+        .ok()?;
+
+    input.join().ok()?;
+    harness.join().ok()?;
+
+    Some(())
+}
+
+fn simple_display(chip: &Chip8, frame_number: u32, key: u8) -> Option<()> {
     let mut frame = String::new();
     for y in 0..32 {
         let line: u64 = chip.read(Display + y * 8)?;
         frame.push_str(format!("{:064b}\n", line).as_str());
     }
 
-    // let pc: u16 = chip.read(PC)?;
-    // let opcode: u16 = chip.read(pc)?;
-    // let vs: u128 = chip.read(Vs)?;
-    // let i: u16 = chip.read(I)?;
+    let pc: u16 = chip.read(PC)?;
+    let opcode: u16 = chip.read(pc)?;
+    let vs: u128 = chip.read(Vs)?;
+    let i: u16 = chip.read(I)?;
+    let dt: u8 = chip.read(DT)?;
 
-    // println!("{}Frame{frame_number:5}", "_".repeat(54));
+    println!("{}Frame{frame_number:5}", "_".repeat(54));
     println!("{}", frame.replace("0", "░").replace("1", "█"));
-    // println!("pc:({pc:x}) | v:{} | i:{i:04x}", format_registers(vs));
-    // println!(" ({:02x}) : {:x?}", opcode, OpCode::from(opcode));
+    println!(
+        "pc:({pc:x}) | v:{} | i:{i:04x} | dt:{dt:02x}",
+        format_registers(vs)
+    );
+    println!(" ({:02x}) : {:x?}", opcode, OpCode::try_from(opcode));
+
+    println!("Pressed: {key:?}");
 
     print!("\x1b[64A\x1b[32D");
     Some(())

@@ -1,6 +1,8 @@
 mod memops;
 mod opcode;
 
+use std::ops::ShrAssign;
+
 pub use memops::*;
 pub use opcode::*;
 
@@ -16,7 +18,7 @@ impl Default for Chip8 {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 pub enum PostExecute {
     Next,
     Stay,
@@ -68,17 +70,17 @@ impl Chip8 {
             NoOp { .. } => panic!("noop"),
             Clear => self.write([0u8; Display.size()], Display)?,
             Draw { x, y, size } => {
-                assert!(x <= 0x3f, "x out of range of screen");
-                assert!(y <= 0x1f, "y out of range of screen");
-                assert!(size > 0, "size bellow range");
-                assert!(size <= 0xf, "size over range");
-
                 let (x, y): (u8, u8) = (self.read(Vs + x)?, self.read(Vs + y)?);
                 let i: u16 = self.read(I)?;
 
+                // assert!(x <= 0x3f, "x out of range of screen");
+                // assert!(y <= 0x1f, "y out of range of screen");
+                // assert!(size > 0, "size bellow range");
+                // assert!(size <= 0xf, "size over range");
+
                 for n in 0..size {
-                    let sprite =
-                        (ByteArray::<u8>::read(self, i + n as u16)? as u64) << (64 - 8) >> x;
+                    let sprite = ((ByteArray::<u8>::read(self, i + n as u16)? as u64) << (64 - 8))
+                        .unbounded_shr(x as u32);
                     let line_start = (y + n) * 8;
                     let screen: u64 = self.read(Display + line_start)?;
 
@@ -290,6 +292,7 @@ impl Chip8 {
     }
 }
 
+// TODO Reforce draw test it should check the collision
 #[cfg(test)]
 mod tests {
     use super::*;
