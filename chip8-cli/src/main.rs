@@ -10,47 +10,81 @@ use std::{
 
 use chip8::*;
 use k_board::{keyboard::Keyboard, keys::Keys};
+
+use crate::timing::Every;
+
 mod timing;
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq)]
-enum ChipArgs {
-    NoGraphics,
-    Parse,
-    Program(String),
-}
-impl TryFrom<String> for ChipArgs {
-    type Error = ();
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        match value.as_str() {
-            "-d" | "--no-display" => Ok(ChipArgs::NoGraphics),
-            "-p" | "--parse" => Ok(ChipArgs::Parse),
-            _ => Ok(ChipArgs::Program(value)),
-        }
-    }
-}
 fn main() {
     run();
 }
 
 // TODO slipperyslope runs incorrectly, seems to be collision code
 
-struct HarnessOptions {
-    program: Vec<u8>,
-    display: bool,
+#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq)]
+struct ChipOptions {
+    graphics: bool,
+    only_parse: bool,
+    program_path: String,
+    fps: u32,
+}
+impl Default for ChipOptions {
+    fn default() -> Self {
+        Self {
+            graphics: true,
+            only_parse: false,
+            program_path: "./roms/test.ch8".into(),
+            fps: 60,
+        }
+    }
 }
 
-fn harness(options: HarnessOptions, exit: Arc<AtomicBool>, key: Arc<AtomicU8>) -> Option<()> {
+impl<'a> TryFrom<env::Args> for ChipOptions {
+    type Error = ();
+
+    fn try_from(value: env::Args) -> Result<Self, Self::Error> {
+        let mut iter = value.into_iter().skip(1);
+        let mut res = Self::default();
+
+        while let Some(word) = iter.next() {
+            match word.as_str() {
+                "-p" | "--parse" => res.only_parse = true,
+                "-g" | "--no-graphics" => res.graphics = false,
+                "-s" | "--fps" => {
+                    res.fps = iter
+                        .next()
+                        .ok_or(())
+                        .and_then(|s| s.as_str().parse().map_err(|_| ()))?;
+                }
+                "-f" | "--file" => res.program_path = iter.next().ok_or(())?,
+                _ => res.program_path = word,
+            }
+        }
+
+        Ok(res)
+    }
+}
+
+fn harness(
+    options: ChipOptions,
+    exit: Arc<AtomicBool>,
+    key: Arc<AtomicU8>,
+    delay: Arc<AtomicU8>,
+    sound: Arc<AtomicU8>,
+) -> Option<()> {
     let mut chip = Chip8::default();
 
+    dbg!(options.program_path.clone());
+    let program = read(options.program_path).ok()?;
+    chip.load_program(&program)?;
     chip.load_data(FONT.as_flattened())?;
-    chip.load_program(&options.program)?;
 
-    let fps = 60 * 10;
+    let fps = options.fps;
     let frame_length = Duration::from_secs(1) / fps;
 
     let mut prev_output = PostExecute::Stay;
 
+    // TODO change to ratatui
     print!("\x1b[2J\x1b[H");
     for (i, _) in timing::Every::new(frame_length).enumerate() {
         if exit.load(Ordering::SeqCst) {
@@ -58,20 +92,46 @@ fn harness(options: HarnessOptions, exit: Arc<AtomicBool>, key: Arc<AtomicU8>) -
         }
         let key = key.load(Ordering::Acquire);
 
+        let (delay, sound) = (
+            delay.swap(chip.read(DT)?, Ordering::AcqRel),
+            sound.swap(chip.read(ST)?, Ordering::AcqRel),
+        );
+        chip.write(delay, DT)?;
+        chip.write(sound, ST)?;
+
+        // TODO chip8 actually reads multiple keys at once, so... we have to change it :)
+        // MAYBE we can use this oportunity to use another crate for input
         chip.load_key(key)?;
-        chip.step_timers()?;
 
         if prev_output != PostExecute::Wait || key != 0xff {
             prev_output = chip.step()?;
         }
 
-        if options.display {
+        if options.graphics {
             simple_display(&chip, i as u32, key)?;
         }
     }
     print!("\x1b[2J\x1b[H");
 
     Some(())
+}
+
+fn timers(delay: Arc<AtomicU8>, sound: Arc<AtomicU8>, exit: Arc<AtomicBool>) {
+    for _ in Every::new(Duration::from_millis(1000 / 60)) {
+        if exit.load(Ordering::Acquire) {
+            break;
+        }
+        delay
+            .fetch_update(Ordering::Release, Ordering::Acquire, |dt| {
+                Some(dt.saturating_sub(1))
+            })
+            .expect("Our function doesnt return Err");
+        sound
+            .fetch_update(Ordering::Release, Ordering::Acquire, |st| {
+                Some(st.saturating_sub(1))
+            })
+            .expect("Our function doesnt return Err");
+    }
 }
 
 fn input(key: Arc<AtomicU8>, exit: Arc<AtomicBool>) {
@@ -93,37 +153,17 @@ fn input(key: Arc<AtomicU8>, exit: Arc<AtomicBool>) {
 }
 
 fn run() -> Option<()> {
-    let args: Vec<_> = env::args()
-        .into_iter()
-        .skip(1)
-        .filter_map(|a| ChipArgs::try_from(a).ok())
-        .collect();
+    let options: ChipOptions = env::args().try_into().ok()?;
 
-    let path = args
-        .iter()
-        .find_map(|a| match a {
-            ChipArgs::Program(p) => Some(p.to_owned()),
-            _ => None,
-        })
-        .or(Some("./src/test.ch8".into()))?;
+    let program = read(options.program_path.clone()).ok()?;
 
-    let program = match read(path.clone()) {
-        Ok(p) => p,
-        Err(e) => panic!("Something happened loading the file: {e}"),
-    };
-
-    if args.contains(&ChipArgs::Parse) {
+    if options.only_parse {
         for opcode in OpCode::parse_program(&program).chunks(5) {
             println!("{opcode:?}");
         }
-        println!("Program: {path}");
+        println!("Program: {}", options.program_path);
         return Some(());
     }
-
-    let options = HarnessOptions {
-        program,
-        display: !args.contains(&ChipArgs::NoGraphics),
-    };
 
     // Handle kill signals
     let exit = Arc::new(AtomicBool::new(false));
@@ -142,18 +182,32 @@ fn run() -> Option<()> {
         })
         .ok()?;
 
+    // Timers
+    let (delay, sound) = (Arc::new(AtomicU8::new(0)), Arc::new(AtomicU8::new(0)));
+    let (_delay, _sound) = (delay.clone(), sound.clone());
+    let _exit = exit.clone();
+    let timers = std::thread::Builder::new()
+        .name("Jessica".into())
+        .spawn(move || {
+            timers(_delay, _sound, _exit);
+            println!("Input exited")
+        })
+        .ok()?;
+
     // Harness
     let _key = key.clone();
     let _exit = exit.clone();
+    let (_delay, _sound) = (delay.clone(), sound.clone());
     let harness = std::thread::Builder::new()
         .name("Staicy".into())
         .spawn(move || {
-            harness(options, _exit, _key);
+            harness(options, _exit, _key, _delay, _sound);
             println!("Harness exited")
         })
         .ok()?;
 
     input.join().ok()?;
+    timers.join().ok()?;
     harness.join().ok()?;
 
     Some(())

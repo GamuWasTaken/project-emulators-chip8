@@ -1,8 +1,6 @@
 mod memops;
 mod opcode;
 
-use std::ops::ShrAssign;
-
 pub use memops::*;
 pub use opcode::*;
 
@@ -24,6 +22,10 @@ pub enum PostExecute {
     Stay,
     Wait,
 }
+//
+// TODO test 4 results:
+// correct sub, subinv, shl, shr
+//
 
 impl Chip8 {
     /// Add current PC to top of stack
@@ -64,10 +66,11 @@ impl Chip8 {
         Some(())
     }
 
+    // TODO cap PC
     fn execute(&mut self, opcode: OpCode) -> Option<PostExecute> {
         use OpCode::*;
         match opcode {
-            NoOp { .. } => panic!("noop"),
+            NoOp { .. } => (),
             Clear => self.write([0u8; Display.size()], Display)?,
             Draw { x, y, size } => {
                 let (x, y): (u8, u8) = (self.read(Vs + x)?, self.read(Vs + y)?);
@@ -77,11 +80,18 @@ impl Chip8 {
                 // assert!(y <= 0x1f, "y out of range of screen");
                 // assert!(size > 0, "size bellow range");
                 // assert!(size <= 0xf, "size over range");
+                // TODO early return?
 
                 for n in 0..size {
                     let sprite = ((ByteArray::<u8>::read(self, i + n as u16)? as u64) << (64 - 8))
                         .unbounded_shr(x as u32);
-                    let line_start = (y + n) * 8;
+                    let (line_start, overflowed) = (y + n).overflowing_mul(8);
+
+                    if overflowed {
+                        // If we go out of the screen just dont paint ?
+                        continue;
+                    }
+
                     let screen: u64 = self.read(Display + line_start)?;
 
                     let xor = sprite ^ screen;
@@ -242,23 +252,23 @@ impl Chip8 {
                 let (va, vb) = (self.read(Vs + a)?, self.read(Vs + b)?);
                 let (res, overflowed) = u8::overflowing_sub(va, vb);
                 self.write(res, Vs + a)?;
-                self.write(overflowed as u8, Vs + 0xf)?;
+                self.write(!overflowed as u8, Vs + 0xf)?;
             }
             ShiftR { a, b } => {
                 let vb: u8 = self.read(Vs + b)?;
-                self.write(vb & 1, Vs + 0xf)?;
                 self.write(vb >> 1, Vs + a)?;
+                self.write(vb & 1, Vs + 0xf)?;
             }
             SubN { a, b } => {
                 let (va, vb) = (self.read(Vs + a)?, self.read(Vs + b)?);
                 let (res, overflowed) = u8::overflowing_sub(vb, va);
                 self.write(res, Vs + a)?;
-                self.write(overflowed as u8, Vs + 0xf)?;
+                self.write(!overflowed as u8, Vs + 0xf)?;
             }
             ShiftL { a, b } => {
                 let vb: u8 = self.read(Vs + b)?;
-                self.write(vb >> 7, Vs + 0xf)?;
                 self.write(vb << 1, Vs + a)?;
+                self.write(vb >> 7, Vs + 0xf)?;
             }
         }
 
