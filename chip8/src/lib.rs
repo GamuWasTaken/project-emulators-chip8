@@ -1,8 +1,13 @@
 mod memops;
 mod opcode;
 
+use std::ops::AddAssign;
+
 pub use memops::*;
 pub use opcode::*;
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Debug, Clone)]
 pub struct Chip8(pub(crate) [u8; 0x1000]);
@@ -19,7 +24,6 @@ impl Default for Chip8 {
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 pub enum PostExecute {
     Next,
-    Stay,
     Wait,
     UpdateDt,
     UpdateSt,
@@ -46,25 +50,38 @@ impl Chip8 {
         self.write(sp, SP)?;
         self.read(Stack + sp)
     }
+    /// Load a program
     pub fn load_program<'a>(&'a mut self, program: &[u8]) -> Option<()> {
         self.0[(Memory as usize)..(Memory as usize + program.len())].copy_from_slice(program);
         Some(())
     }
+    /// Load to data section
     pub fn load_data(&mut self, data: &[u8]) -> Option<()> {
         self.0[(Data as usize)..(Data as usize + data.len())].copy_from_slice(data);
         Some(())
     }
-    pub fn load_key(&mut self, key: u8) -> Option<()> {
-        self.write(key, KEY)
+    /// Updates the keys when passing a bit map of the pressed keys
+    pub fn load_key(&mut self, new_keys: u16) -> Option<()> {
+        let old_keys: u16 = self.read(Keys)?;
+        let newly_pressed = !old_keys & new_keys;
+
+        let last_pressed = newly_pressed.trailing_zeros();
+
+        self.write(last_pressed, LastKey)?;
+        self.write(newly_pressed, Keys)?;
+
+        Some(())
     }
+
+    /// Advance PC to the next instruction
     fn next_instruction(&mut self) -> Option<()> {
+        // TODO cap PC
         let next = ByteArray::<u16>::read(self, PC)? + 2;
         self.write(next, PC)?;
 
         Some(())
     }
 
-    // TODO cap PC
     fn execute(&mut self, opcode: OpCode) -> Option<PostExecute> {
         use OpCode::*;
         match opcode {
@@ -72,12 +89,13 @@ impl Chip8 {
             Clear => self.write([0u8; Display.size()], Display)?,
             Draw { x, y, size } => {
                 let (x, y): (u8, u8) = (self.read(Vs + x)?, self.read(Vs + y)?);
-                let (x, y) = (x % 64, y); // X wraps horizontally, Y doesnt
+                let (x, y) = (x % 64, y % 32);
                 let i: u16 = self.read(I)?;
 
                 for n in 0..size {
-                    let sprite = ((ByteArray::<u8>::read(self, i + n as u16)? as u64) << (64 - 8))
-                        .unbounded_shr(x as u32);
+                    let slice: u8 = self.read(i + n as u16)?;
+                    let sprite = ((slice as u64) << (64 - 8)) >> (x as u32);
+
                     let (line_start, overflowed) = (y + n).overflowing_mul(8);
 
                     if overflowed {
@@ -99,18 +117,15 @@ impl Chip8 {
             }
             Jump { to } => {
                 self.write(to, PC)?;
-                return Some(PostExecute::Stay);
             }
             Call { at } => {
                 self.push()?;
                 self.write(at, PC)?;
-                return Some(PostExecute::Stay);
             }
             JumpReg { by } => {
                 let v0: u8 = self.read(Vs + 0)?;
                 let sum = v0 as u16 + by;
                 self.write(sum, PC)?;
-                return Some(PostExecute::Stay);
             }
             SkipEqK { reg, val } => {
                 let vx: u8 = self.read(Vs + reg)?;
@@ -143,29 +158,29 @@ impl Chip8 {
             }
             SetI { to } => self.write(to, I)?,
             GetRand { reg, mask } => self.write(rand::random::<u8>() & mask, Vs + reg)?,
-            SkipPressed { key } => {
-                // TODO multiple keys can be pressed at once
-                let reg: u8 = self.read(Vs + key)?;
-                let pressed: u8 = self.read(KEY)?;
-                if reg == pressed {
+            SkipPressed { reg } => {
+                let key: u8 = self.read(Vs + reg)?;
+                let pressed: u16 = self.read(Keys)?;
+                if ((pressed >> key) & 1) == 1 {
                     self.next_instruction();
                 }
             }
-            SkipNotPressed { key } => {
-                // TODO multiple keys can be pressed at once
-                let reg: u8 = self.read(Vs + key)?;
-                let pressed: u8 = self.read(KEY)?;
-                if reg != pressed {
+            SkipNotPressed { reg } => {
+                let key: u8 = self.read(Vs + reg)?;
+                let pressed: u16 = self.read(Keys)?;
+                if ((pressed >> key) & 1) != 1 {
                     self.next_instruction();
                 }
             }
             ReadKey { to } => {
-                let key: u8 = self.read(KEY)?;
-                if key > 0xf {
+                let keys: u8 = self.read(Keys)?;
+                if keys == 0 {
                     return Some(PostExecute::Wait);
                 }
+                let key: u8 = self.read(LastKey)?;
                 self.write(key, Vs + to)?;
-            } // Sleep until KEY is not ff,
+                // Sleep until KEY, or just skip go back until key is suplied (spin...)
+            }
             ReadDelay { to } => {
                 let dt: u8 = self.read(DT)?;
                 self.write(dt, Vs + to)?;
@@ -278,6 +293,14 @@ impl Chip8 {
     }
     /// Ticks the timers
     pub fn step_timers(&mut self) -> Option<()> {
+        // TODO can we do this here? we just need the prev time we updated the timers, and updating only on step is ok cus it wont read time unless it steps, the sound is another thing... but idc about sound... and we could just catch setSound opcodes and run sound for that amount of time, it doesnt need to be synced with chip
+
+        // We can only store Durations
+        let _ = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis();
+
         let dt: u8 = self.read(DT)?;
         let st: u8 = self.read(ST)?;
 
@@ -289,249 +312,16 @@ impl Chip8 {
     /// Executes the opcode at pc
     pub fn step(&mut self) -> Option<PostExecute> {
         let pc: u16 = self.read(PC)?;
-        assert!(pc < Memory.size() as _, "pc out of bounds");
+        assert!(pc < 0x1000, "Invalid pc: {pc:04x} out of bounds");
 
         let fragment: u16 = self.read(pc)?;
         let opcode = fragment.try_into().ok()?;
 
-        let result = self.execute(opcode)?;
+        self.next_instruction()?;
+        self.step_timers()?;
 
-        // TODO i dont like this...
-        match result {
-            PostExecute::Next | PostExecute::UpdateDt | PostExecute::UpdateSt => {
-                self.next_instruction()?
-            }
-            PostExecute::Stay | PostExecute::Wait => (),
-        }
+        let result = self.execute(opcode)?;
 
         Some(result)
     }
-}
-
-// TODO Reforce draw test it should check the collision
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const INITIAL_PC: u16 = 0x200;
-
-    /// A default chip8 should be all 0 with a pc at 0x200
-    #[test]
-    fn default() {
-        let chip = Chip8::default();
-
-        let pc: u16 = chip.read(PC).unwrap();
-        assert!(pc == INITIAL_PC);
-    }
-
-    // Set Display to 0
-    #[test]
-    fn clear() {
-        let mut chip = Chip8::default();
-
-        chip.write(0xffffffu64, Display).unwrap();
-        println!(
-            "Mm: {:032x}",
-            ByteArray::<u128>::read(&chip, Display).unwrap()
-        );
-        chip.execute(OpCode::Clear);
-        let display: u128 = chip.read(Display).unwrap();
-
-        assert!(display == 0);
-    }
-
-    // Pop & Set PC
-    // Push & Set PC NNN
-    #[test]
-    fn subroutines() {
-        let mut chip = Chip8::default();
-        chip.execute(OpCode::Call { at: 0xfb03 });
-        chip.execute(OpCode::Call { at: 0xfb03 });
-        chip.execute(OpCode::Call { at: 0xfb03 });
-        let pc: u16 = chip.read(PC).unwrap();
-
-        assert!(pc == 0xfb03);
-
-        chip.execute(OpCode::Return);
-        chip.execute(OpCode::Return);
-        chip.execute(OpCode::Return);
-        let pc: u16 = chip.read(PC).unwrap();
-
-        assert!(pc == INITIAL_PC);
-    }
-
-    // Skip if VX == NN
-    // Skip if VX != NN
-    // Skip if VX == VY
-    // Skip if VX != VY
-    // Skip if VX == key
-    // Skip if VX != key
-    #[test]
-    fn skips() {
-        let mut chip = Chip8::default();
-        chip.write(7u8, Vs + 4).unwrap();
-
-        chip.execute(OpCode::SkipEqK { reg: 4, val: 0 });
-        let pc: u16 = chip.read(PC).unwrap();
-        assert!(pc == INITIAL_PC);
-        chip.execute(OpCode::SkipEqK { reg: 4, val: 7 });
-        let pc: u16 = chip.read(PC).unwrap();
-        assert!(pc == INITIAL_PC + 2);
-
-        chip.execute(OpCode::SkipNotEqK { reg: 4, val: 7 });
-        let pc: u16 = chip.read(PC).unwrap();
-        assert!(pc == INITIAL_PC + 2);
-        chip.execute(OpCode::SkipNotEqK { reg: 4, val: 0 });
-        let pc: u16 = chip.read(PC).unwrap();
-        assert!(pc == INITIAL_PC + 4);
-
-        chip.execute(OpCode::SkipEq { a: 4, b: 7 });
-        let pc: u16 = chip.read(PC).unwrap();
-        assert!(pc == INITIAL_PC + 4);
-        chip.execute(OpCode::SkipEq { a: 7, b: 7 });
-        let pc: u16 = chip.read(PC).unwrap();
-        assert!(pc == INITIAL_PC + 6);
-
-        chip.execute(OpCode::SkipNotEq { a: 7, b: 7 });
-        let pc: u16 = chip.read(PC).unwrap();
-        assert!(pc == INITIAL_PC + 6);
-        chip.execute(OpCode::SkipNotEq { a: 4, b: 7 });
-        let pc: u16 = chip.read(PC).unwrap();
-        assert!(pc == INITIAL_PC + 8);
-
-        chip.write(7u8, KEY).unwrap();
-
-        chip.execute(OpCode::SkipPressed { key: 0 });
-        let pc: u16 = chip.read(PC).unwrap();
-        assert!(pc == INITIAL_PC + 8);
-        chip.execute(OpCode::SkipPressed { key: 4 });
-        let pc: u16 = chip.read(PC).unwrap();
-        assert!(pc == INITIAL_PC + 10);
-
-        chip.execute(OpCode::SkipNotPressed { key: 4 });
-        let pc: u16 = chip.read(PC).unwrap();
-        assert!(pc == INITIAL_PC + 10);
-        chip.execute(OpCode::SkipNotPressed { key: 0 });
-        let pc: u16 = chip.read(PC).unwrap();
-        assert!(pc == INITIAL_PC + 12);
-    }
-
-    // Set PC to NNN
-    // Set PC to V0 + NNN
-    // Set I to NNN
-    // Set I to the sprite location of VX
-    // Inc I with VX
-    #[test]
-    fn set16() {
-        let mut chip = Chip8::default();
-
-        chip.execute(OpCode::Jump { to: 0xfb03 });
-        let pc: u16 = chip.read(PC).unwrap();
-        assert!(pc == 0xfb03);
-
-        chip.write(7u8, Vs + 0).unwrap();
-        chip.execute(OpCode::JumpReg { by: 0xfb03 });
-        let pc: u16 = chip.read(PC).unwrap();
-        assert!(pc == 0xfb0a);
-
-        chip.execute(OpCode::SetI { to: 0xfb03 });
-        let i: u16 = chip.read(I).unwrap();
-        assert!(i == 0xfb03);
-
-        chip.execute(OpCode::GetFontSprite { of: 0 });
-        let i: u16 = chip.read(I).unwrap();
-        assert!(i == 7 * 5);
-
-        chip.execute(OpCode::IncI { with: 0 });
-        let i: u16 = chip.read(I).unwrap();
-        assert!(i == 42);
-    }
-
-    // Set DT to VX
-    // Set ST to VX
-    // Set VX to DT
-    // Set VX to NN
-    // Set VX to KEY (block)
-    // Set VX to rand & NN
-    // Inc VX by NN
-    #[test]
-    fn set8() {
-        let mut chip = Chip8::default();
-        chip.write(7u8, Vs + 4).unwrap();
-
-        chip.execute(OpCode::SetDelay { with: 4 });
-        let dt: u8 = chip.read(DT).unwrap();
-        assert!(dt == 7);
-
-        chip.execute(OpCode::SetSound { with: 4 });
-        let st: u8 = chip.read(ST).unwrap();
-        assert!(st == 7);
-
-        chip.execute(OpCode::ReadDelay { to: 3 });
-        let v3: u8 = chip.read(Vs + 3).unwrap();
-        assert!(v3 == 7);
-
-        chip.execute(OpCode::SetV { reg: 2, to: 8 });
-        let v2: u8 = chip.read(Vs + 2).unwrap();
-        assert!(v2 == 8);
-
-        chip.execute(OpCode::IncV { reg: 2, by: 8 });
-        let v2: u8 = chip.read(Vs + 2).unwrap();
-        assert!(v2 == 16);
-
-        // chip.write(4u8 ,KEY);
-        // chip.execute(OpCode::ReadKey { to: 1 });
-        // let v1 : u8 = chip.read(Vs + 1).unwrap();
-        // assert!(v1 == 4);
-
-        const VAL: u8 = 0b11110000;
-        chip.write(VAL, Vs + 9).unwrap();
-        chip.execute(OpCode::GetRand { reg: 9, mask: !VAL });
-        let v9: u8 = chip.read(Vs + 9).unwrap();
-        assert!(v9 != VAL);
-    }
-
-    // TODO Draw sprite from I at VX VY with N lines; VF = some 1 got turned off
-    // TODO BCD of VX at I
-
-    // Save V0..VX to I
-    // Load V0..VX from I
-    #[test]
-    fn save_load() {
-        let mut chip = Chip8::default();
-        chip.write(0x77u8, Vs + 7).unwrap();
-        chip.write(0x44u8, Vs + 4).unwrap();
-        chip.write(INITIAL_PC, I).unwrap();
-        chip.write(0x55u8, Memory + 5).unwrap();
-
-        chip.execute(OpCode::SaveRegs { upto: 4 });
-        let i: u16 = chip.read(I).unwrap();
-        assert!(i == INITIAL_PC + 4 + 1);
-
-        let m04: u8 = chip.read(Memory + 4).unwrap();
-        assert!(m04 == 0x44);
-
-        chip.write(INITIAL_PC, I).unwrap();
-        chip.write(0x33u8, Memory + 3).unwrap();
-        chip.execute(OpCode::LoadRegs { upto: 7 });
-
-        let i: u16 = chip.read(I).unwrap();
-        assert!(i == INITIAL_PC + 7 + 1);
-
-        let v3: u8 = chip.read(Vs + 3).unwrap();
-        assert!(v3 == 0x33);
-
-        let v7: u8 = chip.read(Vs + 7).unwrap();
-        assert!(v7 == 0x00);
-    }
-
-    // Set VX to VY
-    // VX |= VY
-    // VX &= VY
-    // VX ^= VY
-    // VX += VY; VF = overflow
-    // VX -= VY; VF = !undeflow
-    // VX = VY >> 1; VF = VY[0] lsb
-    // VX = VY - VX; VF = !underflow
-    // VX = VY << 1; VF = VY[7] msb
 }

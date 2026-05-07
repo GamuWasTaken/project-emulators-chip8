@@ -22,8 +22,8 @@ pub enum OpCode {
     IncV { reg: Reg, by: u8 },         // 7XNN | Cons | VX += NN (doesnt flag overflow)
     SetI { to: Adr },                  // ANNN | Load | I = NNN
     GetRand { reg: Reg, mask: u8 },    // CXNN | Rand | VX = rand() & NN
-    SkipPressed { key: Reg },          // EX9E | Read | PC + 1 if key() == VX
-    SkipNotPressed { key: Reg },       // EXA1 | Read | PC + 1 if key() != VX
+    SkipPressed { reg: Reg },          // EX9E | Read | PC + 1 if key() == VX
+    SkipNotPressed { reg: Reg },       // EXA1 | Read | PC + 1 if key() != VX
     ReadKey { to: Reg },               // FX0A | Read | VX = key() (blocking)
     ReadDelay { to: Reg },             // FX07 | Time | VX = DT
     SetDelay { with: Reg },            // FX15 | Time | DT = VX
@@ -124,8 +124,8 @@ impl TryFrom<&[u8; 2]> for OpCode {
                 reg,
                 mask: stitch![c, d],
             },
-            (0xe, key, 0x9, 0xe) => SkipPressed { key },
-            (0xe, key, 0xa, 0x1) => SkipNotPressed { key },
+            (0xe, key, 0x9, 0xe) => SkipPressed { reg: key },
+            (0xe, key, 0xa, 0x1) => SkipNotPressed { reg: key },
             (0xf, to, 0, 0xa) => ReadKey { to },
             (0xf, to, 0, 0x7) => ReadDelay { to },
             (0xf, with, 0x1, 0x5) => SetDelay { with },

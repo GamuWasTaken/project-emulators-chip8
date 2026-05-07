@@ -1,22 +1,60 @@
 use std::{
     env,
     fs::read,
+    process::Child,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering},
     },
     time::Duration,
 };
 
 use chip8::*;
 use k_board::{keyboard::Keyboard, keys::Keys};
+use ratatui::{DefaultTerminal, prelude::*};
 
 use crate::timing::Every;
 
 mod timing;
 
+#[derive(Debug, Default)]
+struct App {
+    chip: Chip8,
+    exit: bool,
+}
+
 fn main() {
+    // let _ = ratatui();
     run();
+}
+
+fn ratatui() -> Option<()> {
+    let chip = Chip8::default();
+
+    ratatui::run(|terminal| {
+        // TODO Implement Ratatui harness
+        // Keys: may need to set a flag to get if key is pressed or released
+        // IDK what to do with the emulator, put it in a thread? or just spin until a key is pressed?
+        // timers can be done with instants and math, each frame update them and adjust for 60Hz
+        // If keys are given as events, we can check for keys every frame? dont know if that would feel choppy
+
+        // We can use the PostExecutre to send signals of what to do, we still maintain correctness but sugest our caller to do something smarter
+
+        // Main problems to solve:
+        // Timing, if we can make it internal we are solved
+        // Input, I think its solved with the new load_keys architecture
+        // Quirks...
+    });
+
+    Some(())
+}
+
+impl Widget for &App {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized,
+    {
+    }
 }
 
 // TODO slipperyslope runs incorrectly, seems to be collision code
@@ -26,7 +64,7 @@ struct ChipOptions {
     graphics: bool,
     only_parse: bool,
     program_path: String,
-    fps: u32,
+    fps: Option<u32>,
 }
 impl Default for ChipOptions {
     fn default() -> Self {
@@ -34,7 +72,7 @@ impl Default for ChipOptions {
             graphics: true,
             only_parse: false,
             program_path: "./roms/test.ch8".into(),
-            fps: 60,
+            fps: None,
         }
     }
 }
@@ -42,21 +80,22 @@ impl Default for ChipOptions {
 impl<'a> TryFrom<env::Args> for ChipOptions {
     type Error = ();
 
-    fn try_from(value: env::Args) -> Result<Self, Self::Error> {
-        let mut iter = value.into_iter().skip(1);
+    fn try_from(args: env::Args) -> Result<Self, Self::Error> {
+        let mut args = args.into_iter().skip(1);
         let mut res = Self::default();
 
-        while let Some(word) = iter.next() {
+        while let Some(word) = args.next() {
             match word.as_str() {
                 "-p" | "--parse" => res.only_parse = true,
                 "-g" | "--no-graphics" => res.graphics = false,
                 "-s" | "--fps" => {
-                    res.fps = iter
-                        .next()
-                        .ok_or(())
-                        .and_then(|s| s.as_str().parse().map_err(|_| ()))?;
+                    res.fps = Some(
+                        args.next()
+                            .ok_or(())
+                            .and_then(|s| s.as_str().parse().map_err(|_| ()))?,
+                    );
                 }
-                "-f" | "--file" => res.program_path = iter.next().ok_or(())?,
+                "-f" | "--file" => res.program_path = args.next().ok_or(())?,
                 _ => res.program_path = word,
             }
         }
@@ -68,9 +107,9 @@ impl<'a> TryFrom<env::Args> for ChipOptions {
 fn harness(
     options: ChipOptions,
     exit: Arc<AtomicBool>,
-    key: Arc<AtomicU8>,
-    delay: Arc<AtomicU8>,
-    sound: Arc<AtomicU8>,
+    key: Arc<AtomicU16>,
+    // delay: Arc<AtomicU8>,
+    // sound: Arc<AtomicU8>,
 ) -> Option<()> {
     let mut chip = Chip8::default();
 
@@ -80,27 +119,30 @@ fn harness(
     chip.load_data(FONT.as_flattened())?;
 
     let fps = options.fps;
-    let frame_length = Duration::from_secs(1) / fps;
+    let frame_length = if let Some(fps) = fps {
+        Duration::from_secs(1) / fps
+    } else {
+        Duration::ZERO
+    };
 
-    let mut prev_output = PostExecute::Stay;
+    let mut prev_output = PostExecute::Next;
 
     // TODO change to ratatui
     print!("\x1b[2J\x1b[H");
-    for (i, _) in timing::Every::new(frame_length).enumerate() {
+    for (i, _) in Every::new(frame_length).enumerate() {
         if exit.load(Ordering::SeqCst) {
             break;
         }
         let key = key.load(Ordering::Acquire);
 
-        match prev_output {
-            PostExecute::UpdateDt => delay.store(chip.read(DT)?, Ordering::Release),
-            PostExecute::UpdateSt => sound.store(chip.read(ST)?, Ordering::Release),
-            _ => {}
-        }
-        chip.write(delay.load(Ordering::Acquire), DT)?;
-        chip.write(sound.load(Ordering::Acquire), ST)?;
+        // match prev_output {
+        //     PostExecute::UpdateDt => delay.store(chip.read(DT)?, Ordering::Release),
+        //     PostExecute::UpdateSt => sound.store(chip.read(ST)?, Ordering::Release),
+        //     _ => {}
+        // }
+        // chip.write(delay.load(Ordering::Acquire), DT)?;
+        // chip.write(sound.load(Ordering::Acquire), ST)?;
 
-        // TODO chip8 actually reads multiple keys at once, so... we have to change it :)
         chip.load_key(key)?;
 
         if prev_output != PostExecute::Wait || key != 0xff {
@@ -108,7 +150,8 @@ fn harness(
         }
 
         if options.graphics {
-            simple_display(&chip, i as u32, key)?;
+            let keys: u16 = chip.read(Keys)?;
+            simple_display(&chip, i as u32, keys)?;
         }
     }
     print!("\x1b[2J\x1b[H");
@@ -116,32 +159,32 @@ fn harness(
     Some(())
 }
 
-fn timers(delay: Arc<AtomicU8>, sound: Arc<AtomicU8>, exit: Arc<AtomicBool>) {
-    for _ in Every::new(Duration::from_millis(1000 / 60)) {
-        if exit.load(Ordering::Acquire) {
-            break;
-        }
-        let dt = delay.load(Ordering::Acquire);
-        // Decrement only if dt hasnt been modified
-        let _ = delay.compare_exchange(
-            dt,
-            dt.saturating_sub(1),
-            Ordering::Acquire,
-            Ordering::Relaxed,
-        );
+// fn timers(delay: Arc<AtomicU8>, sound: Arc<AtomicU8>, exit: Arc<AtomicBool>) {
+//     for _ in Every::new(Duration::from_millis(1000 / 60)) {
+//         if exit.load(Ordering::Acquire) {
+//             break;
+//         }
+//         let dt = delay.load(Ordering::Acquire);
+//         // Decrement only if dt hasnt been modified
+//         let _ = delay.compare_exchange(
+//             dt,
+//             dt.saturating_sub(1),
+//             Ordering::Acquire,
+//             Ordering::Relaxed,
+//         );
 
-        let st = sound.load(Ordering::Acquire);
-        // Decrement only if st hasnt been modified
-        let _ = sound.compare_exchange(
-            st,
-            st.saturating_sub(1),
-            Ordering::Acquire,
-            Ordering::Relaxed,
-        );
-    }
-}
+//         let st = sound.load(Ordering::Acquire);
+//         // Decrement only if st hasnt been modified
+//         let _ = sound.compare_exchange(
+//             st,
+//             st.saturating_sub(1),
+//             Ordering::Acquire,
+//             Ordering::Relaxed,
+//         );
+//     }
+// }
 
-fn input(key: Arc<AtomicU8>, exit: Arc<AtomicBool>) {
+fn input(key: Arc<AtomicU16>, exit: Arc<AtomicBool>) {
     let keyboard = Keyboard::new();
 
     for pressed_key in keyboard {
@@ -153,7 +196,7 @@ fn input(key: Arc<AtomicU8>, exit: Arc<AtomicBool>) {
             .into_iter()
             .find(|(k, _)| *k == pressed_key)
             .map(|(_, v)| v)
-            .unwrap_or(0xff);
+            .unwrap_or(0x0);
 
         key.swap(traduction, Ordering::Release);
     }
@@ -178,7 +221,7 @@ fn run() -> Option<()> {
     ctrlc::set_handler(move || _exit.store(true, Ordering::SeqCst)).ok()?;
 
     // Read keys continuously
-    let key = Arc::new(AtomicU8::new(0xff));
+    let key = Arc::new(AtomicU16::new(0xff));
     let _key = key.clone();
     let _exit = exit.clone();
     let input = std::thread::Builder::new()
@@ -190,37 +233,38 @@ fn run() -> Option<()> {
         .ok()?;
 
     // Timers
-    let (delay, sound) = (Arc::new(AtomicU8::new(0)), Arc::new(AtomicU8::new(0)));
-    let (_delay, _sound) = (delay.clone(), sound.clone());
-    let _exit = exit.clone();
-    let timers = std::thread::Builder::new()
-        .name("Jessica".into())
-        .spawn(move || {
-            timers(_delay, _sound, _exit);
-            println!("Timers exited")
-        })
-        .ok()?;
+    // let (delay, sound) = (Arc::new(AtomicU8::new(0)), Arc::new(AtomicU8::new(0)));
+    // let (_delay, _sound) = (delay.clone(), sound.clone());
+    // let _exit = exit.clone();
+    // let timers = std::thread::Builder::new()
+    //     .name("Jessica".into())
+    //     .spawn(move || {
+    //         timers(_delay, _sound, _exit);
+    //         println!("Timers exited")
+    //     })
+    //     .ok()?;
 
     // Harness
     let _key = key.clone();
     let _exit = exit.clone();
-    let (_delay, _sound) = (delay.clone(), sound.clone());
+    // let (_delay, _sound) = (delay.clone(), sound.clone());
     let harness = std::thread::Builder::new()
         .name("Staicy".into())
         .spawn(move || {
-            harness(options, _exit, _key, _delay, _sound);
+            // harness(options, _exit, _key, _delay, _sound);
+            harness(options, _exit, _key);
             println!("Harness exited")
         })
         .ok()?;
 
     input.join().ok()?;
-    timers.join().ok()?;
+    // timers.join().ok()?;
     harness.join().ok()?;
 
     Some(())
 }
 
-fn simple_display(chip: &Chip8, frame_number: u32, key: u8) -> Option<()> {
+fn simple_display(chip: &Chip8, frame_number: u32, key: u16) -> Option<()> {
     let mut frame = String::new();
     for y in 0..32 {
         let line: u64 = chip.read(Display + y * 8)?;
@@ -241,7 +285,7 @@ fn simple_display(chip: &Chip8, frame_number: u32, key: u8) -> Option<()> {
     );
     println!(" ({:02x}) : {:x?}", opcode, OpCode::try_from(opcode));
 
-    println!("Pressed: {key:02x?}");
+    println!("Pressed: {key:016b}");
 
     print!("\x1b[64A\x1b[32D");
     Some(())
@@ -283,24 +327,24 @@ pub const FONT: [[u8; 5]; 16] = [
     [0xF0, 0x80, 0xF0, 0x80, 0x80], // F
 ];
 
-pub const KEY_MAP: [(Keys, u8); 16] = [
-    (Keys::Char('q'), 0x0),
-    (Keys::Char('w'), 0x1),
-    (Keys::Char('e'), 0x2),
-    (Keys::Char('r'), 0x3),
+pub const KEY_MAP: [(Keys, u16); 16] = [
+    (Keys::Char('q'), 0b0000_0000_0000_0001),
+    (Keys::Char('w'), 0b0000_0000_0000_0010),
+    (Keys::Char('e'), 0b0000_0000_0000_0100),
+    (Keys::Char('r'), 0b0000_0000_0000_1000),
     //
-    (Keys::Char('a'), 0x4),
-    (Keys::Char('s'), 0x5),
-    (Keys::Char('d'), 0x6),
-    (Keys::Char('f'), 0x7),
+    (Keys::Char('a'), 0b0000_0000_0001_0000),
+    (Keys::Char('s'), 0b0000_0000_0010_0000),
+    (Keys::Char('d'), 0b0000_0000_0100_0000),
+    (Keys::Char('f'), 0b0000_0000_1000_0000),
     //
-    (Keys::Char('z'), 0x8),
-    (Keys::Char('x'), 0x9),
-    (Keys::Char('c'), 0xa),
-    (Keys::Char('v'), 0xb),
+    (Keys::Char('z'), 0b0000_0001_0000_0000),
+    (Keys::Char('x'), 0b0000_0010_0000_0000),
+    (Keys::Char('c'), 0b0000_0100_0000_0000),
+    (Keys::Char('v'), 0b0000_1000_0000_0000),
     //
-    (Keys::Char('j'), 0xc),
-    (Keys::Char('k'), 0xd),
-    (Keys::Char('l'), 0xe),
-    (Keys::Char('p'), 0xf),
+    (Keys::Char('j'), 0b0001_0000_0000_0000),
+    (Keys::Char('k'), 0b0010_0000_0000_0000),
+    (Keys::Char('l'), 0b0100_0000_0000_0000),
+    (Keys::Char('p'), 0b1000_0000_0000_0000),
 ];

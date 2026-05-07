@@ -107,8 +107,9 @@ pub use Region::*;
 pub enum Region {
     End = 0x1000,     // 0x1000 | End (0)
     Display = 0x0F00, // 0x0F00 | Display (256)
-    Empty = 0x0ED8,   // 0x0ED8 | Empty (41)
-    KEY = 0x0ED7,     // 0x0ED7 | Key (1)
+    Empty = 0x0EDA,   // 0x0EDA | Empty (38)
+    Keys = 0x0ED8,    // 0x0ED8 | PressedKeys (2)
+    LastKey = 0x0ED7, // 0x0ED7 | Key (1) latest key that was pressed
     ST = 0x0ED6,      // 0x0ED6 | Sound timer (1)
     DT = 0x0ED5,      // 0x0ED5 | Delay timer (1)
     SP = 0x0ED4,      // 0x0ED4 | Stack pointer (1)
@@ -129,19 +130,20 @@ impl From<Region> for u16 {
 impl Region {
     pub const fn size(&self) -> usize {
         match self {
-            Region::End => 0,
-            Region::Display => End as usize - Display as usize,
-            Region::Empty => Display as usize - Empty as usize,
-            Region::KEY => Empty as usize - KEY as usize,
-            Region::ST => KEY as usize - ST as usize,
-            Region::DT => ST as usize - DT as usize,
-            Region::SP => DT as usize - SP as usize,
-            Region::PC => SP as usize - PC as usize,
-            Region::I => PC as usize - I as usize,
-            Region::Vs => I as usize - Vs as usize,
-            Region::Stack => Vs as usize - Stack as usize,
-            Region::Memory => Stack as usize - Memory as usize,
-            Region::Data => Memory as usize - Data as usize,
+            End => 0,
+            Display => End as usize - Display as usize,
+            Empty => Display as usize - Empty as usize,
+            Keys => Empty as usize - Keys as usize,
+            LastKey => Keys as usize - LastKey as usize,
+            ST => LastKey as usize - ST as usize,
+            DT => ST as usize - DT as usize,
+            SP => DT as usize - SP as usize,
+            PC => SP as usize - PC as usize,
+            I => PC as usize - I as usize,
+            Vs => I as usize - Vs as usize,
+            Stack => Vs as usize - Stack as usize,
+            Memory => Stack as usize - Memory as usize,
+            Data => Memory as usize - Data as usize,
         }
     }
 }
