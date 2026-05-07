@@ -92,15 +92,15 @@ fn harness(
         }
         let key = key.load(Ordering::Acquire);
 
-        let (delay, sound) = (
-            delay.swap(chip.read(DT)?, Ordering::AcqRel),
-            sound.swap(chip.read(ST)?, Ordering::AcqRel),
-        );
-        chip.write(delay, DT)?;
-        chip.write(sound, ST)?;
+        match prev_output {
+            PostExecute::UpdateDt => delay.store(chip.read(DT)?, Ordering::Release),
+            PostExecute::UpdateSt => sound.store(chip.read(ST)?, Ordering::Release),
+            _ => {}
+        }
+        chip.write(delay.load(Ordering::Acquire), DT)?;
+        chip.write(sound.load(Ordering::Acquire), ST)?;
 
         // TODO chip8 actually reads multiple keys at once, so... we have to change it :)
-        // MAYBE we can use this oportunity to use another crate for input
         chip.load_key(key)?;
 
         if prev_output != PostExecute::Wait || key != 0xff {
@@ -121,16 +121,23 @@ fn timers(delay: Arc<AtomicU8>, sound: Arc<AtomicU8>, exit: Arc<AtomicBool>) {
         if exit.load(Ordering::Acquire) {
             break;
         }
-        delay
-            .fetch_update(Ordering::Release, Ordering::Acquire, |dt| {
-                Some(dt.saturating_sub(1))
-            })
-            .expect("Our function doesnt return Err");
-        sound
-            .fetch_update(Ordering::Release, Ordering::Acquire, |st| {
-                Some(st.saturating_sub(1))
-            })
-            .expect("Our function doesnt return Err");
+        let dt = delay.load(Ordering::Acquire);
+        // Decrement only if dt hasnt been modified
+        let _ = delay.compare_exchange(
+            dt,
+            dt.saturating_sub(1),
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        );
+
+        let st = sound.load(Ordering::Acquire);
+        // Decrement only if st hasnt been modified
+        let _ = sound.compare_exchange(
+            st,
+            st.saturating_sub(1),
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        );
     }
 }
 
@@ -190,7 +197,7 @@ fn run() -> Option<()> {
         .name("Jessica".into())
         .spawn(move || {
             timers(_delay, _sound, _exit);
-            println!("Input exited")
+            println!("Timers exited")
         })
         .ok()?;
 
@@ -234,7 +241,7 @@ fn simple_display(chip: &Chip8, frame_number: u32, key: u8) -> Option<()> {
     );
     println!(" ({:02x}) : {:x?}", opcode, OpCode::try_from(opcode));
 
-    println!("Pressed: {key:?}");
+    println!("Pressed: {key:02x?}");
 
     print!("\x1b[64A\x1b[32D");
     Some(())
@@ -287,10 +294,10 @@ pub const KEY_MAP: [(Keys, u8); 16] = [
     (Keys::Char('d'), 0x6),
     (Keys::Char('f'), 0x7),
     //
-    (Keys::Char('u'), 0x8),
-    (Keys::Char('i'), 0x9),
-    (Keys::Char('o'), 0xa),
-    (Keys::Char('ñ'), 0xb),
+    (Keys::Char('z'), 0x8),
+    (Keys::Char('x'), 0x9),
+    (Keys::Char('c'), 0xa),
+    (Keys::Char('v'), 0xb),
     //
     (Keys::Char('j'), 0xc),
     (Keys::Char('k'), 0xd),

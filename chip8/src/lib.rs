@@ -21,11 +21,9 @@ pub enum PostExecute {
     Next,
     Stay,
     Wait,
+    UpdateDt,
+    UpdateSt,
 }
-//
-// TODO test 4 results:
-// correct sub, subinv, shl, shr
-//
 
 impl Chip8 {
     /// Add current PC to top of stack
@@ -74,13 +72,8 @@ impl Chip8 {
             Clear => self.write([0u8; Display.size()], Display)?,
             Draw { x, y, size } => {
                 let (x, y): (u8, u8) = (self.read(Vs + x)?, self.read(Vs + y)?);
+                let (x, y) = (x % 64, y); // X wraps horizontally, Y doesnt
                 let i: u16 = self.read(I)?;
-
-                // assert!(x <= 0x3f, "x out of range of screen");
-                // assert!(y <= 0x1f, "y out of range of screen");
-                // assert!(size > 0, "size bellow range");
-                // assert!(size <= 0xf, "size over range");
-                // TODO early return?
 
                 for n in 0..size {
                     let sprite = ((ByteArray::<u8>::read(self, i + n as u16)? as u64) << (64 - 8))
@@ -88,7 +81,7 @@ impl Chip8 {
                     let (line_start, overflowed) = (y + n).overflowing_mul(8);
 
                     if overflowed {
-                        // If we go out of the screen just dont paint ?
+                        // Sprites are cliped if out of screen
                         continue;
                     }
 
@@ -151,6 +144,7 @@ impl Chip8 {
             SetI { to } => self.write(to, I)?,
             GetRand { reg, mask } => self.write(rand::random::<u8>() & mask, Vs + reg)?,
             SkipPressed { key } => {
+                // TODO multiple keys can be pressed at once
                 let reg: u8 = self.read(Vs + key)?;
                 let pressed: u8 = self.read(KEY)?;
                 if reg == pressed {
@@ -158,13 +152,20 @@ impl Chip8 {
                 }
             }
             SkipNotPressed { key } => {
+                // TODO multiple keys can be pressed at once
                 let reg: u8 = self.read(Vs + key)?;
                 let pressed: u8 = self.read(KEY)?;
                 if reg != pressed {
                     self.next_instruction();
                 }
             }
-            ReadKey { .. } => return Some(PostExecute::Wait), // Sleep until KEY is not ff,
+            ReadKey { to } => {
+                let key: u8 = self.read(KEY)?;
+                if key > 0xf {
+                    return Some(PostExecute::Wait);
+                }
+                self.write(key, Vs + to)?;
+            } // Sleep until KEY is not ff,
             ReadDelay { to } => {
                 let dt: u8 = self.read(DT)?;
                 self.write(dt, Vs + to)?;
@@ -172,10 +173,12 @@ impl Chip8 {
             SetDelay { with } => {
                 let vx: u8 = self.read(Vs + with)?;
                 self.write(vx, DT)?;
+                return Some(PostExecute::UpdateDt);
             }
             SetSound { with } => {
                 let vx: u8 = self.read(Vs + with)?;
                 self.write(vx, ST)?;
+                return Some(PostExecute::UpdateSt);
             }
             IncI { with } => {
                 let i: u16 = self.read(I)?;
@@ -217,14 +220,13 @@ impl Chip8 {
                 let of: u8 = self.read(Vs + of)?;
                 let i: u16 = self.read(I)?;
 
-                self.write(
-                    [
-                        (of / 100) % 10,
-                        (of / 10) % 10,
-                        (of / 1) % 10, //
-                    ],
-                    i,
-                )?;
+                let bcd = [
+                    (of / 100) % 10,
+                    (of / 10) % 10,
+                    (of / 1) % 10, //
+                ];
+
+                self.write(bcd, i)?;
             }
             Assign { a, to } => {
                 let vb: u8 = self.read(Vs + to)?;
@@ -294,8 +296,12 @@ impl Chip8 {
 
         let result = self.execute(opcode)?;
 
-        if let PostExecute::Next = result {
-            self.next_instruction()?;
+        // TODO i dont like this...
+        match result {
+            PostExecute::Next | PostExecute::UpdateDt | PostExecute::UpdateSt => {
+                self.next_instruction()?
+            }
+            PostExecute::Stay | PostExecute::Wait => (),
         }
 
         Some(result)
