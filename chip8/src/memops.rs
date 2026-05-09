@@ -30,7 +30,19 @@ pub trait ByteArray<'a, T: ByteList<'a, Output: ToSlice<u8>>>:
         T::from(&self[range])
     }
     #[must_use]
-    fn write(&mut self, data: T, at: impl Into<u16>) -> Option<()> {
+    fn write(&mut self, data: T, at: impl Into<Offset>) -> Option<()> {
+        let at = at.into();
+        assert!(
+            size_of::<T>() <= at.0.size(),
+            "Region overflow, attempted to write {} bytes to {:?} that has a size of {}",
+            size_of::<T>(),
+            at,
+            at.0.size()
+        );
+        self.unchecked_write(data, at)
+    }
+    #[must_use]
+    fn unchecked_write(&mut self, data: T, at: impl Into<u16>) -> Option<()> {
         let at = at.into() as usize;
         let at = at..at.checked_add(size_of::<T>())?;
         self[at].copy_from_slice(data.to_list().to_slice());
@@ -125,6 +137,12 @@ pub enum Region {
 impl From<Region> for u16 {
     fn from(value: Region) -> Self {
         value as u16
+    }
+}
+
+impl From<Region> for Offset {
+    fn from(value: Region) -> Self {
+        Offset(value, 0)
     }
 }
 

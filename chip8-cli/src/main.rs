@@ -27,6 +27,7 @@ fn main() {
     // let _ = ratatui();
     run();
 }
+// TODO handle errors instead of just returning Option return Result with message
 
 fn ratatui() -> Option<()> {
     let chip = Chip8::default();
@@ -118,6 +119,8 @@ fn harness(
     chip.load_program(&program)?;
     chip.load_data(FONT.as_flattened())?;
 
+    chip.write(u8::MAX, DT)?;
+
     let fps = options.fps;
     let frame_length = if let Some(fps) = fps {
         Duration::from_secs(1) / fps
@@ -205,7 +208,7 @@ fn input(key: Arc<AtomicU16>, exit: Arc<AtomicBool>) {
 fn run() -> Option<()> {
     let options: ChipOptions = env::args().try_into().ok()?;
 
-    let program = read(options.program_path.clone()).ok()?;
+    let program = read(options.program_path.clone()).expect("Program not found");
 
     if options.only_parse {
         for opcode in OpCode::parse_program(&program).chunks(5) {

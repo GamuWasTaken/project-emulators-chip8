@@ -71,7 +71,7 @@ impl Chip8 {
         let old_keys: u16 = self.read(Keys)?;
         let newly_pressed = !old_keys & new_keys;
 
-        let last_pressed = newly_pressed.trailing_zeros();
+        let last_pressed = newly_pressed.trailing_zeros().try_into().unwrap_or(u8::MAX);
 
         self.write(last_pressed, LastKey)?;
         self.write(newly_pressed, Keys)?;
@@ -220,7 +220,7 @@ impl Chip8 {
 
                 let mask = !0u128 << ((0xf - upto) * 8);
                 let res = (mems & !mask) | (regs & mask);
-                self.write(res, i)?;
+                self.unchecked_write(res, i)?;
 
                 let sum = i + upto as u16 + 1;
                 self.write(sum, I)?;
@@ -247,7 +247,7 @@ impl Chip8 {
                     (of / 1) % 10, //
                 ];
 
-                self.write(bcd, i)?;
+                self.unchecked_write(bcd, i)?;
             }
             Assign { a, to } => {
                 let vb: u8 = self.read(Vs + to)?;
@@ -299,8 +299,6 @@ impl Chip8 {
     }
     /// Ticks the timers
     pub fn step_timers(&mut self) -> Option<()> {
-        // TODO can we do this here? we just need the prev time we updated the timers, and updating only on step is ok cus it wont read time unless it steps, the sound is another thing... but idc about sound... and we could just catch setSound opcodes and run sound for that amount of time, it doesnt need to be synced with chip
-
         let prev: u64 = self.read(Time)?;
 
         let current = std::time::SystemTime::now()
@@ -311,13 +309,14 @@ impl Chip8 {
         let current_duration = std::time::Duration::from_millis(current);
         let prev_duration = std::time::Duration::from_millis(prev);
 
-        dbg!(current_duration, prev_duration);
-        let decrements = (current_duration - prev_duration).as_millis() * 60;
-        let (decrements, reminder) = (decrements / 1000, decrements % 1000);
-        let decrements = decrements.try_into().unwrap_or(u8::MAX);
+        const _60HZ: u64 = 1000 / 60;
+
+        let difference = (current_duration - prev_duration).as_millis() as u64;
+        let decrements = (difference / _60HZ).try_into().unwrap_or(u8::MAX);
+        let reminder = difference % _60HZ;
 
         // Account for step being called in between reductions
-        self.write(current - reminder as u64, Time)?;
+        self.write(current - reminder, Time)?;
 
         let dt: u8 = self.read(DT)?;
         let st: u8 = self.read(ST)?;
