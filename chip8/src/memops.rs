@@ -107,7 +107,8 @@ pub use Region::*;
 pub enum Region {
     End = 0x1000,     // 0x1000 | End (0)
     Display = 0x0F00, // 0x0F00 | Display (256)
-    Empty = 0x0EDA,   // 0x0EDA | Empty (38)
+    Empty = 0x0EE2,   // 0x0EE2 | Empty (30)
+    Time = 0x0EDA,    // 0x0EDA | Time as millis (8)
     Keys = 0x0ED8,    // 0x0ED8 | PressedKeys (2)
     LastKey = 0x0ED7, // 0x0ED7 | Key (1) latest key that was pressed
     ST = 0x0ED6,      // 0x0ED6 | Sound timer (1)
@@ -133,7 +134,8 @@ impl Region {
             End => 0,
             Display => End as usize - Display as usize,
             Empty => Display as usize - Empty as usize,
-            Keys => Empty as usize - Keys as usize,
+            Time => Empty as usize - Time as usize,
+            Keys => Time as usize - Keys as usize,
             LastKey => Keys as usize - LastKey as usize,
             ST => LastKey as usize - ST as usize,
             DT => ST as usize - DT as usize,

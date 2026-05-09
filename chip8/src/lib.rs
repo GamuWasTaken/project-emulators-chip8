@@ -1,7 +1,7 @@
 mod memops;
 mod opcode;
 
-use std::ops::AddAssign;
+use std::u8;
 
 pub use memops::*;
 pub use opcode::*;
@@ -15,7 +15,13 @@ pub struct Chip8(pub(crate) [u8; 0x1000]);
 impl Default for Chip8 {
     fn default() -> Self {
         let mut cero = Self([0; _]);
-        cero.write(0x200u16, PC).unwrap();
+        cero.write(0x200u16, PC).expect("Cannot write to mem");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("Cannot access time")
+            .as_millis() as u64;
+
+        cero.write(now, Time).expect("Cannot write to mem");
 
         cero
     }
@@ -295,17 +301,29 @@ impl Chip8 {
     pub fn step_timers(&mut self) -> Option<()> {
         // TODO can we do this here? we just need the prev time we updated the timers, and updating only on step is ok cus it wont read time unless it steps, the sound is another thing... but idc about sound... and we could just catch setSound opcodes and run sound for that amount of time, it doesnt need to be synced with chip
 
-        // We can only store Durations
-        let _ = std::time::SystemTime::now()
+        let prev: u64 = self.read(Time)?;
+
+        let current = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .ok()?
-            .as_millis();
+            .as_millis() as u64;
+
+        let current_duration = std::time::Duration::from_millis(current);
+        let prev_duration = std::time::Duration::from_millis(prev);
+
+        dbg!(current_duration, prev_duration);
+        let decrements = (current_duration - prev_duration).as_millis() * 60;
+        let (decrements, reminder) = (decrements / 1000, decrements % 1000);
+        let decrements = decrements.try_into().unwrap_or(u8::MAX);
+
+        // Account for step being called in between reductions
+        self.write(current - reminder as u64, Time)?;
 
         let dt: u8 = self.read(DT)?;
         let st: u8 = self.read(ST)?;
 
-        self.write(dt.saturating_sub(1), DT)?;
-        self.write(st.saturating_sub(1), ST)?;
+        self.write(dt.saturating_sub(decrements), DT)?;
+        self.write(st.saturating_sub(decrements), ST)?;
 
         Some(())
     }
