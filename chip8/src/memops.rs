@@ -1,4 +1,5 @@
 use super::Chip8;
+use anyhow::{Context, Result};
 
 impl<'a, const K: usize> ByteArray<'a, [u8; K]> for Chip8 {}
 impl<'a> ByteArray<'a, u8> for Chip8 {}
@@ -24,13 +25,20 @@ pub trait ByteArray<'a, T: ByteList<'a, Output: ToSlice<u8>>>:
     std::ops::IndexMut<std::ops::Range<usize>, Output = [u8]>
 {
     #[must_use]
-    fn read(&'a self, from: impl Into<u16>) -> Option<T> {
+    fn read(&'a self, from: impl Into<u16>) -> Result<T> {
         let from = from.into() as usize;
-        let range = from..from.checked_add(size_of::<T>())?;
-        T::from(&self[range])
+        let range = from..from.checked_add(size_of::<T>()).context("usize overflow")?;
+
+        T::from(&self[range]).with_context(|| {
+            format!(
+                "could not read {} from {:x}",
+                std::any::type_name::<T>(),
+                from
+            )
+        })
     }
     #[must_use]
-    fn write(&mut self, data: T, at: impl Into<Offset>) -> Option<()> {
+    fn write(&mut self, data: T, at: impl Into<Offset>) -> Result<()> {
         let at = at.into();
         assert!(
             size_of::<T>() <= at.0.size(),
@@ -42,12 +50,12 @@ pub trait ByteArray<'a, T: ByteList<'a, Output: ToSlice<u8>>>:
         self.unchecked_write(data, at)
     }
     #[must_use]
-    fn unchecked_write(&mut self, data: T, at: impl Into<u16>) -> Option<()> {
+    fn unchecked_write(&mut self, data: T, at: impl Into<u16>) -> Result<()> {
         let at = at.into() as usize;
-        let at = at..at.checked_add(size_of::<T>())?;
+        let at = at..at.checked_add(size_of::<T>()).context("usize overflow")?;
         self[at].copy_from_slice(data.to_list().to_slice());
 
-        Some(())
+        Ok(())
     }
 }
 
@@ -99,7 +107,6 @@ impl<const K: usize> ToSlice<u8> for [u8; K] {
     }
 }
 
-// TODO maybe make it more compact?
 // stitch!([ a, b, c ] as u16)
 macro_rules! stitch {
     [$a: expr, $b: expr, $c: expr, $d: expr] => {
@@ -112,9 +119,6 @@ macro_rules! stitch {
 pub(crate) use stitch;
 
 pub use Region::*;
-
-// TODO consider impl Index for Chip8 -> self[Memory + reg] = ...
-// Better control over access, a place to add checks
 #[derive(Debug, Clone, Copy)]
 pub enum Region {
     End = 0x1000,     // 0x1000 | End (0)
@@ -132,6 +136,22 @@ pub enum Region {
     Stack = 0x0EA0,   // 0x0EA0 | Call stack (32)
     Memory = 0x0200,  // 0x0200 | Free (3232)
     Data = 0x0000,    // 0x0000 | Internal Data (200)
+}
+
+impl std::ops::Index<Region> for Chip8 {
+    type Output = [u8];
+
+    fn index(&self, index: Region) -> &Self::Output {
+        let pos = index as usize;
+        &self.0[pos..(pos + index.size())]
+    }
+}
+
+impl std::ops::IndexMut<Region> for Chip8 {
+    fn index_mut(&mut self, index: Region) -> &mut Self::Output {
+        let pos = index as usize;
+        &mut self.0[pos..(pos + index.size())]
+    }
 }
 
 impl From<Region> for u16 {

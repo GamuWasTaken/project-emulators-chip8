@@ -3,29 +3,18 @@ mod opcode;
 
 use std::u8;
 
-pub use memops::*;
-pub use opcode::*;
+use anyhow::{Context, Result};
+
+use memops::*;
+
+pub use memops::{ByteArray, Region};
+pub use opcode::OpCode;
 
 #[cfg(test)]
 mod tests;
 
 #[derive(Debug, Clone)]
 pub struct Chip8(pub(crate) [u8; 0x1000]);
-
-impl Default for Chip8 {
-    fn default() -> Self {
-        let mut cero = Self([0; _]);
-        cero.write(0x200u16, PC).expect("Cannot write to mem");
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("Cannot access time")
-            .as_millis() as u64;
-
-        cero.write(now, Time).expect("Cannot write to mem");
-
-        cero
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 pub enum PostExecute {
@@ -36,8 +25,21 @@ pub enum PostExecute {
 }
 
 impl Chip8 {
+    pub fn new() -> Result<Self> {
+        let mut cero = Self([0; _]);
+        cero.write(0x200u16, PC).context("cannot write to mem")?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("Cannot access time")
+            .as_millis() as u64;
+
+        cero.write(now, Time).context("cannot write to mem")?;
+
+        Ok(cero)
+    }
+    pub const INITIAL_PC: u16 = 0x200;
     /// Add current PC to top of stack
-    fn push(&mut self) -> Option<()> {
+    fn push(&mut self) -> Result<()> {
         let sp: u8 = self.read(SP)?;
         assert!(sp < 16, "sp over bounds {}", sp);
 
@@ -45,10 +47,11 @@ impl Chip8 {
         self.write(pc, Stack + sp)?;
 
         self.write(sp + 2, SP)?;
-        Some(())
+
+        Ok(())
     }
     /// Pop from top of stack into PC
-    fn pop(&mut self) -> Option<u16> {
+    fn pop(&mut self) -> Result<u16> {
         let sp: u8 = ByteArray::<u8>::read(self, SP)?;
         assert!(sp != 0, "sp under bounds");
 
@@ -57,17 +60,18 @@ impl Chip8 {
         self.read(Stack + sp)
     }
     /// Load a program
-    pub fn load_program<'a>(&'a mut self, program: &[u8]) -> Option<()> {
+    pub fn load_program<'a>(&'a mut self, program: &[u8]) -> Result<()> {
         self.0[(Memory as usize)..(Memory as usize + program.len())].copy_from_slice(program);
-        Some(())
+
+        Ok(())
     }
     /// Load to data section
-    pub fn load_data(&mut self, data: &[u8]) -> Option<()> {
+    pub fn load_data(&mut self, data: &[u8]) -> Result<()> {
         self.0[(Data as usize)..(Data as usize + data.len())].copy_from_slice(data);
-        Some(())
+        Ok(())
     }
     /// Updates the keys when passing a bit map of the pressed keys
-    pub fn load_key(&mut self, new_keys: u16) -> Option<()> {
+    pub fn load_key(&mut self, new_keys: u16) -> Result<()> {
         let old_keys: u16 = self.read(Keys)?;
         let newly_pressed = !old_keys & new_keys;
 
@@ -76,19 +80,18 @@ impl Chip8 {
         self.write(last_pressed, LastKey)?;
         self.write(newly_pressed, Keys)?;
 
-        Some(())
+        Ok(())
     }
 
     /// Advance PC to the next instruction
-    fn next_instruction(&mut self) -> Option<()> {
-        // TODO cap PC
+    fn next_instruction(&mut self) -> Result<()> {
         let next = ByteArray::<u16>::read(self, PC)? + 2;
         self.write(next, PC)?;
 
-        Some(())
+        Ok(())
     }
 
-    fn execute(&mut self, opcode: OpCode) -> Option<PostExecute> {
+    fn execute(&mut self, opcode: OpCode) -> Result<PostExecute> {
         use OpCode::*;
         match opcode {
             NoOp { .. } => (),
@@ -136,25 +139,25 @@ impl Chip8 {
             SkipEqK { reg, val } => {
                 let vx: u8 = self.read(Vs + reg)?;
                 if vx == val {
-                    self.next_instruction();
+                    self.next_instruction()?;
                 }
             }
             SkipNotEqK { reg, val } => {
                 let vx: u8 = self.read(Vs + reg)?;
                 if vx != val {
-                    self.next_instruction();
+                    self.next_instruction()?;
                 }
             }
             SkipEq { a, b } => {
                 let (va, vb): (u8, u8) = (self.read(Vs + a)?, self.read(Vs + b)?);
                 if va == vb {
-                    self.next_instruction();
+                    self.next_instruction()?;
                 }
             }
             SkipNotEq { a, b } => {
                 let (va, vb): (u8, u8) = (self.read(Vs + a)?, self.read(Vs + b)?);
                 if va != vb {
-                    self.next_instruction();
+                    self.next_instruction()?;
                 }
             }
             SetV { reg, to } => self.write(to, Vs + reg)?,
@@ -168,24 +171,23 @@ impl Chip8 {
                 let key: u8 = self.read(Vs + reg)?;
                 let pressed: u16 = self.read(Keys)?;
                 if ((pressed >> key) & 1) == 1 {
-                    self.next_instruction();
+                    self.next_instruction()?;
                 }
             }
             SkipNotPressed { reg } => {
                 let key: u8 = self.read(Vs + reg)?;
                 let pressed: u16 = self.read(Keys)?;
                 if ((pressed >> key) & 1) != 1 {
-                    self.next_instruction();
+                    self.next_instruction()?;
                 }
             }
             ReadKey { to } => {
                 let keys: u8 = self.read(Keys)?;
                 if keys == 0 {
-                    return Some(PostExecute::Wait);
+                    return Ok(PostExecute::Wait);
                 }
                 let key: u8 = self.read(LastKey)?;
                 self.write(key, Vs + to)?;
-                // Sleep until KEY, or just skip go back until key is suplied (spin...)
             }
             ReadDelay { to } => {
                 let dt: u8 = self.read(DT)?;
@@ -194,12 +196,12 @@ impl Chip8 {
             SetDelay { with } => {
                 let vx: u8 = self.read(Vs + with)?;
                 self.write(vx, DT)?;
-                return Some(PostExecute::UpdateDt);
+                return Ok(PostExecute::UpdateDt);
             }
             SetSound { with } => {
                 let vx: u8 = self.read(Vs + with)?;
                 self.write(vx, ST)?;
-                return Some(PostExecute::UpdateSt);
+                return Ok(PostExecute::UpdateSt);
             }
             IncI { with } => {
                 let i: u16 = self.read(I)?;
@@ -295,15 +297,14 @@ impl Chip8 {
             }
         }
 
-        Some(PostExecute::Next)
+        Ok(PostExecute::Next)
     }
     /// Ticks the timers
-    pub fn step_timers(&mut self) -> Option<()> {
+    pub fn step_timers(&mut self) -> Result<()> {
         let prev: u64 = self.read(Time)?;
 
         let current = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)?
             .as_millis() as u64;
 
         let current_duration = std::time::Duration::from_millis(current);
@@ -324,21 +325,21 @@ impl Chip8 {
         self.write(dt.saturating_sub(decrements), DT)?;
         self.write(st.saturating_sub(decrements), ST)?;
 
-        Some(())
+        Ok(())
     }
     /// Executes the opcode at pc
-    pub fn step(&mut self) -> Option<PostExecute> {
+    pub fn step(&mut self) -> Result<PostExecute> {
         let pc: u16 = self.read(PC)?;
         assert!(pc < 0x1000, "Invalid pc: {pc:04x} out of bounds");
 
         let fragment: u16 = self.read(pc)?;
-        let opcode = fragment.try_into().ok()?;
+        let opcode = fragment.into();
 
         self.next_instruction()?;
         self.step_timers()?;
 
         let result = self.execute(opcode)?;
 
-        Some(result)
+        Ok(result)
     }
 }

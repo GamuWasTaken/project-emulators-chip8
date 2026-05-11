@@ -67,20 +67,18 @@ impl OpCode {
             .collect()
     }
 }
-impl TryFrom<u16> for OpCode {
-    fn try_from(value: u16) -> Result<Self, ()> {
+impl From<u16> for OpCode {
+    fn from(value: u16) -> Self {
         let [hi, lo] = value.to_be_bytes();
-        TryInto::try_into(&[hi, lo])
+        Into::into(&[hi, lo])
     }
-
-    type Error = ();
 }
-impl TryFrom<&[u8; 2]> for OpCode {
-    fn try_from(value: &[u8; 2]) -> Result<Self, Self::Error> {
+impl From<&[u8; 2]> for OpCode {
+    fn from(value: &[u8; 2]) -> Self {
         let [a, b, c, d] = OpCode::as_nibbles(value);
 
         use OpCode::*;
-        Ok(match (a, b, c, d) {
+        match (a, b, c, d) {
             (0, 0, 0xe, 0) => Clear,
             (0xd, x, y, size) => Draw { x, y, size },
             (0, 0, 0xe, 0xe) => Return,
@@ -144,14 +142,9 @@ impl TryFrom<&[u8; 2]> for OpCode {
             (0x8, a, b, 6) => ShiftR { a, b },
             (0x8, a, b, 7) => SubN { a, b },
             (0x8, a, b, 0xe) => ShiftL { a, b },
-            _ => {
-                // panic!("Unknown opcode {:x?}", other);
-                NoOp {
-                    val: stitch![0, 0, 0, 0],
-                }
-            }
-        })
+            (a, b, c, d) => NoOp {
+                val: stitch![a, b, c, d],
+            },
+        }
     }
-
-    type Error = ();
 }
